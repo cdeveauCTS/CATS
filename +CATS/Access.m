@@ -155,7 +155,8 @@ classdef Access
             password = "";
 
             d = uifigure('Name', title, 'Position', [400 400 520 190], ...
-                'WindowStyle', 'modal', 'Theme', theme, 'Tag', 'CATS_PasswordDialog');
+                'WindowStyle', 'modal', 'Theme', theme, 'Tag', 'CATS_PasswordDialog', ...
+                'WindowKeyPressFcn', @onKey);
 
             if ~isempty(parent) && isvalid(parent)
                 d.Position(1:2) = parent.Position(1:2) + ...
@@ -170,9 +171,10 @@ classdef Access
             l.Layout.Column = [1 3];
 
             % Text field that shows one bullet per character; the real
-            % text is kept in "typed" as it changes
+            % text is kept in "typed" as it changes. Enter submits.
             field = uieditfield(g, 'text', 'FontSize', CATS.Theme.FontLarge, ...
-                'Tag', 'CATS_PasswordField', 'ValueChangingFcn', @onChanging);
+                'Tag', 'CATS_PasswordField', 'ValueChangingFcn', @onChanging, ...
+                'ValueChangedFcn', @onChanged);
             field.Layout.Column = [1 3];
 
             ok = uibutton(g, 'Text', 'OK', 'FontSize', CATS.Theme.FontBase, ...
@@ -200,6 +202,25 @@ classdef Access
             function onChanging(src, event)
                 typed = CATS.Access.unmask(typed, string(event.Value));
                 src.Value = repmat(char(8226), 1, strlength(typed));
+            end
+
+            function onChanged(~, ~)
+                % Fires on Enter, and also when focus leaves the field,
+                % e.g. on clicking Cancel. Let a pending Cancel click run
+                % first; submit only if the dialog is still open.
+                pause(0.15);
+                if isvalid(d)
+                    uiresume(d);
+                end
+            end
+
+            function onKey(~, event)
+                switch event.Key
+                    case 'return'
+                        uiresume(d);
+                    case 'escape'
+                        delete(d);
+                end
             end
 
         end

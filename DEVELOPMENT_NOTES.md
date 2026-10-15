@@ -77,11 +77,24 @@ The PC needs:
     later parts.
   - The statement is stored in Settings per profile and criterion.
   - It is recorded in the metadata, the batch log Notes, and the report NOTES column.
+- **Engineering mode is password-locked** (`+CATS/Access.m`).
+  - It unlocks with the station password or the master password. Only
+    PBKDF2-SHA256 salted hashes are stored, never the passwords.
+  - The station password is set, changed or removed under Settings →
+    Engineering Password..., which needs the current station or master password.
+    It is kept in `%APPDATA%\CATS\settings.json`. Deleting or editing that entry
+    leaves only the master password; nothing is ever unlocked by default.
+  - The master hash is `resources/engineering_master.json`, in the repo, and must
+    be included when compiling CATS.exe. The user keeps the password itself.
+  - If the master password is forgotten, run `CATS.Access.setMasterPassword()`,
+    commit the new file, and rebuild.
 - **Uncorrected testing** is a switch in Engineering mode (Instrument tab).
   - The cal check then only checks the sweep settings.
   - The Test and Instrument tabs show UNCORRECTED in bold orange.
   - Every saved part is marked UNCORRECTED in its metadata, log Notes and report NOTES.
   - It turns off at batch end, when Engineering mode is turned off, and on restart.
+  - Reports containing uncorrected parts are flagged in the header (row 4, with the
+    count) and get `_UNCORRECTED` added to the file name.
 - **ECal**: CATS pushes the profile sweep, then asks the operator to run ECal on the
   VNA. It then verifies that correction is on and the sweep matches the profile.
   - `VNA_485E.runECal()` exists for a future "Run ECal" button.

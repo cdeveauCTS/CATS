@@ -196,6 +196,49 @@ notesCol = find(strcmp(cells(12,:), 'NOTES'));
 verifyNotEmpty(testCase, notesCol);
 verifyEqual(testCase, cells{16, notesCol}, 'UNCORRECTED; Override HSR: fixture');
 
+% File name flags it too
+verifyTrue(testCase, endsWith(CATS.App.reportFileName(batch.ReportFile, recs), "_UNCORRECTED.xlsx"));
+verifyEqual(testCase, CATS.App.reportFileName(batch.ReportFile, recs([recs.Uncorrected] == false)), ...
+    string(batch.ReportFile));
+
+end
+
+function testEngineeringPassword(testCase)
+% Station password unlocks; wrong / empty passwords do not; a station
+% entry edited by hand falls back to master-only (never unlocked).
+
+s = CATS.Settings.load(fullfile(testCase.TestData.Temp, "s.json"));
+
+s.EngineeringPassword = CATS.Access.makeRecord("bench-42");
+
+verifyFalse(testCase, contains(jsonencode(s.EngineeringPassword), "bench-42"));
+
+[ok, which] = CATS.Access.check("bench-42", s);
+verifyTrue(testCase, ok);
+verifyEqual(testCase, which, "station");
+
+verifyFalse(testCase, CATS.Access.check("bench-43", s));
+verifyFalse(testCase, CATS.Access.check("", s));
+
+% Saved and reloaded
+s.save();
+s2 = CATS.Settings.load(s.File);
+verifyTrue(testCase, CATS.Access.check("bench-42", s2));
+
+% Hand edits: wrong type or a tampered hash never unlock
+txt = fileread(s.File);
+bad = strrep(txt, s.EngineeringPassword.Hash, repmat('0', 1, 64));
+fid = fopen(s.File, 'w'); fprintf(fid, '%s', bad); fclose(fid);
+verifyFalse(testCase, CATS.Access.check("bench-42", CATS.Settings.load(s.File)));
+
+fid = fopen(s.File, 'w'); fprintf(fid, '{"EngineeringPassword": "letmein"}'); fclose(fid);
+s3 = CATS.Settings.load(s.File);
+verifyFalse(testCase, CATS.Access.check("letmein", s3));
+
+% The master hash ships with the app
+verifyTrue(testCase, isfile(CATS.Access.masterFile()));
+verifyTrue(testCase, CATS.Access.isConfigured(s3));
+
 end
 
 %==========================================================

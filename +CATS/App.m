@@ -931,7 +931,7 @@ classdef App < handle
                 error('CATS:NoRecords', 'No saved parts in batch %s.', batch.Id);
             end
 
-            file = batch.ReportFile;
+            file = CATS.App.reportFileName(batch.ReportFile, records);
 
             Specs.writeReport(records, batch.Profile, file, ...
                 obj.reportHeader(records));
@@ -962,7 +962,7 @@ classdef App < handle
                 name = name + "_" + regexprep(operator, '[<>:"/\\|?*\s]', '_');
             end
 
-            file = fullfile(folder, name + ".xlsx");
+            file = CATS.App.reportFileName(fullfile(folder, name + ".xlsx"), records);
 
             Specs.writeReport(records, profile, file, obj.reportHeader(records));
 
@@ -2774,6 +2774,13 @@ classdef App < handle
             obj.H.ReportPreviewSummary.Text = sprintf('%s:  %d parts   PASS %d (%d with override)   FAIL %d', ...
                 title, n, sum(d == "PASS"), sum(o), sum(d == "FAIL"));
 
+            u = sum(arrayfun(@(r) isequal(r.Uncorrected, true), records));
+
+            if u > 0
+                obj.H.ReportPreviewSummary.Text = obj.H.ReportPreviewSummary.Text + ...
+                    sprintf('   %d UNCORRECTED (report will be flagged)', u);
+            end
+
         end
 
         function onWriteBatchReport(obj)
@@ -3029,12 +3036,7 @@ classdef App < handle
 
             if obj.H.EngMode.Value
 
-                choice = obj.confirm(['Engineering mode lets you type a VNA sweep and push it. ' ...
-                    'After a manual push, testing stays blocked until the profile sweep is ' ...
-                    're-pushed and the cal is verified.'], 'Engineering Mode', ...
-                    ["Enable","Cancel"], "Cancel");
-
-                if choice ~= "Enable"
+                if ~obj.unlockEngineering()
                     obj.H.EngMode.Value = false;
                 end
 
@@ -3051,6 +3053,88 @@ classdef App < handle
             if obj.H.EngMode.Value
                 obj.refreshInstrument(true);
             end
+
+        end
+
+        function ok = unlockEngineering(obj)
+            % Engineering mode needs the station or master password.
+
+            ok = false;
+
+            if ~CATS.Access.isConfigured(obj.Settings)
+                obj.alert(['No engineering password is set up on this station, ' ...
+                    'and no master password is installed. Engineering mode is locked.'], ...
+                    'Engineering Mode');
+                return
+            end
+
+            password = obj.promptPassword('Engineering Mode', ...
+                ['Engineering password. Engineering mode lets you push a sweep by hand ' ...
+                'and test without error correction.']);
+
+            if strlength(password) == 0
+                return
+            end
+
+            [ok, which] = CATS.Access.check(password, obj.Settings);
+
+            if ok
+                obj.setStatus("Engineering mode unlocked (" + which + " password).");
+            else
+                obj.alert('Wrong password. Engineering mode stays locked.', 'Engineering Mode');
+            end
+
+        end
+
+        function changeEngineeringPassword(obj, parent)
+            % Set, change or remove this station's password. Needs the
+            % current station password or the master password.
+
+            if CATS.Access.isConfigured(obj.Settings)
+
+                current = obj.promptPassword('Engineering Password', ...
+                    'Current station password (or the master password):', parent);
+
+                if strlength(current) == 0
+                    return
+                end
+
+                if ~CATS.Access.check(current, obj.Settings)
+                    obj.alert('Wrong password; the station password was not changed.', ...
+                        'Engineering Password', parent);
+                    return
+                end
+
+            end
+
+            new = obj.promptPassword('Engineering Password', ...
+                ['New station password. Leave blank to remove it ' ...
+                '(the master password always works).'], parent);
+
+            if strlength(new) == 0
+
+                choice = obj.confirm('Remove the station password? Only the master password will unlock Engineering mode.', ...
+                    'Engineering Password', ["Remove","Cancel"], "Cancel", parent);
+
+                if choice == "Remove"
+                    obj.Settings.EngineeringPassword = struct();
+                    obj.Settings.save();
+                    obj.setStatus("Station engineering password removed.");
+                end
+
+                return
+
+            end
+
+            if ~strcmp(new, obj.promptPassword('Engineering Password', 'Type it again:', parent))
+                obj.alert('The passwords did not match; nothing was changed.', 'Engineering Password', parent);
+                return
+            end
+
+            obj.Settings.EngineeringPassword = CATS.Access.makeRecord(new);
+            obj.Settings.save();
+
+            obj.setStatus("Station engineering password set.");
 
         end
 
@@ -3287,13 +3371,13 @@ classdef App < handle
 
         function openSettings(obj)
 
-            d = uifigure('Name', 'CATS Settings', 'Position', [300 300 640 240], ...
+            d = uifigure('Name', 'CATS Settings', 'Position', [300 300 640 290], ...
                 'WindowStyle', 'modal', 'Theme', obj.Figure.Theme.BaseColorStyle, ...
                 'Tag', 'CATS_SettingsDialog');
 
-            g = uigridlayout(d, [4 3]);
+            g = uigridlayout(d, [5 3]);
             g.ColumnWidth = {140, '1x', 100};
-            g.RowHeight = {36, 36, 36, 44};
+            g.RowHeight = {36, 36, 36, 40, 44};
 
             uilabel(g, 'Text', 'Data folder', 'FontSize', CATS.Theme.FontBase);
             dataField = uieditfield(g, 'text', 'Value', char(obj.Settings.DataRoot), ...
@@ -3310,6 +3394,13 @@ classdef App < handle
             simBox = uicheckbox(g, 'Text', 'List the simulated VNA (training / testing)', ...
                 'Value', obj.Settings.ShowSim, 'FontSize', CATS.Theme.FontBase);
             simBox.Layout.Column = [1 3];
+
+            uilabel(g, 'Text', 'Engineering', 'FontSize', CATS.Theme.FontBase);
+            engButton = uibutton(g, 'Text', 'Engineering Password...', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'Tooltip', 'Set, change or remove the password for Engineering mode on this station', ...
+                'ButtonPushedFcn', @(~,~) obj.changeEngineeringPassword(d));
+            engButton.Layout.Column = [2 3];
 
             bg = uigridlayout(g, [1 3]);
             bg.Layout.Column = [1 3];
@@ -3466,7 +3557,7 @@ classdef App < handle
 
         end
 
-        function answer = confirm(obj, message, title, options, default)
+        function answer = confirm(obj, message, title, options, default, parent)
             % uiconfirm, or the next scripted answer when testing.
 
             if ~isempty(obj.ScriptedAnswers)
@@ -3478,13 +3569,17 @@ classdef App < handle
 
             end
 
-            answer = string(uiconfirm(obj.Figure, message, title, ...
+            if nargin < 6 || isempty(parent)
+                parent = obj.Figure;
+            end
+
+            answer = string(uiconfirm(parent, message, title, ...
                 'Options', cellstr(options), 'DefaultOption', char(default), ...
                 'CancelOption', char(options(end))));
 
         end
 
-        function alert(obj, message, title)
+        function alert(obj, message, title, parent)
 
             obj.setStatus(string(title) + ": " + extractBefore(string(message) + newline, newline));
 
@@ -3492,7 +3587,28 @@ classdef App < handle
                 return
             end
 
-            uialert(obj.Figure, message, title);
+            if nargin < 4 || isempty(parent) || ~isvalid(parent)
+                parent = obj.Figure;
+            end
+
+            uialert(parent, message, title);
+
+        end
+
+        function text = promptPassword(obj, title, prompt, parent)
+            % Masked password dialog, or the next scripted answer.
+
+            if nargin < 4 || isempty(parent)
+                parent = obj.Figure;
+            end
+
+            if ~isempty(obj.ScriptedAnswers)
+                text = obj.ScriptedAnswers(1);
+                obj.ScriptedAnswers(1) = [];
+                return
+            end
+
+            text = CATS.Access.prompt(title, prompt, obj.Figure.Theme.BaseColorStyle, parent);
 
         end
 
@@ -3543,6 +3659,19 @@ classdef App < handle
     end
 
     methods (Static)
+
+        function file = reportFileName(file, records)
+            % "..._UNCORRECTED.xlsx" when any part was measured without
+            % error correction, so it is obvious before the file is opened.
+
+            if any(arrayfun(@(r) isfield(r, 'Uncorrected') && isequal(r.Uncorrected, true), records))
+                [folder, name, ext] = fileparts(file);
+                file = fullfile(folder, name + "_UNCORRECTED" + ext);
+            end
+
+            file = string(file);
+
+        end
 
         function toggleTrace(event)
             % Legend click: hide / show the trace, and its passband twin

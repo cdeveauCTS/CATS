@@ -10,6 +10,8 @@ classdef Settings < handle
     %   LastOperator, LastWorkOrder, LastProfile
     %   VNAResource     last VNA resource used (tried first on launch)
     %   ShowSim         list the simulated VNA (testing)
+    %   EngineeringPassword  station password, salted hash only
+    %                        (see CATS.Access)
     %
     % Usage:
     %
@@ -42,6 +44,12 @@ classdef Settings < handle
         %
         OverrideStatements struct = struct()
 
+        %
+        % Station Engineering-mode password: Salt / Hash / Iterations
+        % from CATS.Access.makeRecord, never the password itself
+        %
+        EngineeringPassword struct = struct()
+
     end
 
     properties (SetAccess = private)
@@ -72,7 +80,11 @@ classdef Settings < handle
                     for name = string(fieldnames(saved)).'
 
                         if isprop(s, name) && name ~= "File"
-                            s.(name) = saved.(name);
+                            try
+                                s.(name) = saved.(name);
+                            catch
+                                % Wrong type (hand-edited file): keep the default
+                            end
                         end
 
                     end
@@ -167,7 +179,7 @@ classdef Settings < handle
 
             for name = ["DataRoot","ProfilesFolder","Theme","LastOperator", ...
                     "LastWorkOrder","LastProfile","VNAResource","ShowSim", ...
-                    "OverrideStatements"]
+                    "OverrideStatements","EngineeringPassword"]
                 data.(name) = obj.(name);
             end
 

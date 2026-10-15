@@ -1,0 +1,7 @@
+*.asv
+*.autosave
+slprj/
+codegen/
+build/output/
+resources/project/*.lock
+docs/

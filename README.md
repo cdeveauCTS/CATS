@@ -31,7 +31,10 @@ VNA drivers, part profiles and pass/fail evaluation shared with 3TS).
 6. **Finish Batch** writes the report (ILRLRippleAtt "Table 3" layout, columns from
    the profile). The **Reports** tab also writes batch and day/shift reports later.
 
-Tabs: Test · Log · Review (open saved Touchstone files and re-judge them) · Reports.
+Tabs: Test · Log (all results at this station, from disk) · Review (overlay and compare
+saved Touchstone files against a profile) · Reports (batch and day/shift, with preview) ·
+Instrument (VNA connection, sweep vs profile, cal per S-parameter, errors; Engineering
+mode to push a sweep by hand).
 Light/Dark switch in the header; settings are saved per user.
 
 ## Data

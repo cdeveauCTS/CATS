@@ -135,14 +135,87 @@ classdef Storage
             CATS.Storage.writeJson(metaFile, meta);
 
             CATS.Storage.appendLog(batch, record.Serial, record.Decision, ...
-                record.ComputedPass, record.Retest, record.SweepFile, now_, record.Override);
+                record.ComputedPass, record.Retest, record.SweepFile, now_, ...
+                record.Override, strjoin(results.Id(~results.Pass), ","));
 
         end
 
         function logSkip(batch, serial)
 
             CATS.Storage.appendLog(batch, string(serial), "SKIPPED", ...
-                false, false, "", datetime("now"), "");
+                false, false, "", datetime("now"), "", "");
+
+        end
+
+        %==========================================================
+        % READ BATCH LOGS (FOR THE LOG TAB)
+        %==========================================================
+        function log = readLogs(root, fromDay, toDay)
+            % All batch-log rows (PASS / FAIL / SKIPPED) for the test
+            % dates fromDay..toDay, newest first. Columns:
+            % Timestamp, Serial, Decision, Failed, Override, Retest,
+            % Operator, Profile, BatchId
+
+            arguments
+                root {mustBeTextScalar}
+                fromDay datetime = datetime("today")
+                toDay datetime = datetime("today")
+            end
+
+            names = {'Timestamp','Serial','Decision','Failed','Override', ...
+                'Retest','Operator','Profile','BatchId'};
+
+            log = cell2table(cell(0, numel(names)), 'VariableNames', names);
+
+            parts = {};
+
+            for day = dateshift(fromDay,'start','day'):caldays(1):dateshift(toDay,'start','day')
+
+                files = dir(fullfile(root, string(day, "yyyy-MM-dd"), '*', 'Batch_*.csv'));
+
+                for f = files(:).'
+
+                    try
+                        t = readtable(fullfile(f.folder, f.name), 'TextType', 'string', ...
+                            'Delimiter', ',', 'Format', 'auto');
+                    catch
+                        continue
+                    end
+
+                    if height(t) == 0
+                        continue
+                    end
+
+                    % Columns added in later versions
+                    for opt = ["Override","Failed"]
+                        if ~ismember(opt, t.Properties.VariableNames)
+                            t.(opt) = strings(height(t), 1);
+                        end
+                    end
+
+                    t.Override = fillmissing(string(t.Override), 'constant', "");
+                    t.Failed = fillmissing(string(t.Failed), 'constant', "");
+
+                    id = extractBetween(string(f.name), "Batch_", ".csv");
+
+                    % Rows are appended in order; a millisecond per row
+                    % keeps that order for entries within the same second
+                    when = datetime(string(t.Timestamp), 'InputFormat', 'yyyy-MM-dd HH:mm:ss') + ...
+                        milliseconds((1:height(t))');
+
+                    parts{end+1} = table( ...
+                        when, ...
+                        string(t.Serial), string(t.Decision), t.Failed, t.Override, ...
+                        logical(t.Retest), string(t.Operator), string(t.Profile), ...
+                        repmat(id, height(t), 1), 'VariableNames', names); %#ok<AGROW>
+
+                end
+
+            end
+
+            if ~isempty(parts)
+                log = sortrows(vertcat(parts{:}), 'Timestamp', 'descend');
+            end
 
         end
 
@@ -318,7 +391,7 @@ classdef Storage
 
     methods (Static, Access = private)
 
-        function appendLog(batch, serial, decision, computedPass, retest, sweepFile, when, override)
+        function appendLog(batch, serial, decision, computedPass, retest, sweepFile, when, override, failed)
 
             CATS.Storage.ensureFolder(fileparts(batch.LogFile));
 
@@ -335,13 +408,13 @@ classdef Storage
 
             if isNew
                 fprintf(fid, ['Timestamp,Serial,Decision,ComputedPass,Retest,' ...
-                    'Operator,WorkOrder,Profile,SweepFile,Override\n']);
+                    'Operator,WorkOrder,Profile,SweepFile,Override,Failed\n']);
             end
 
-            fprintf(fid, '%s,%s,%s,%d,%d,%s,%s,%s,"%s","%s"\n', ...
+            fprintf(fid, '%s,%s,%s,%d,%d,%s,%s,%s,"%s","%s","%s"\n', ...
                 string(when, "yyyy-MM-dd HH:mm:ss"), serial, decision, ...
                 computedPass, retest, batch.Operator, batch.WorkOrder, ...
-                batch.Profile.Name, sweepFile, strrep(override, '"', ''''));
+                batch.Profile.Name, sweepFile, strrep(override, '"', ''''), failed);
 
         end
 

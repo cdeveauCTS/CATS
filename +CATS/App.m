@@ -14,7 +14,8 @@ classdef App < handle
     %      sweep + metadata and moves to the next serial number.
     %   5. Finish Batch writes the test report.
     %
-    % Tabs: Test | Log | Review | Reports. Light/Dark switch in the header.
+    % Tabs: Test | Log | Review | Reports | Instrument. Light/Dark switch
+    % in the header.
     %
     % Usage:
     %
@@ -49,6 +50,8 @@ classdef App < handle
         CalVerified logical = false
 
         CalInfo struct = struct()
+
+        CalVerifiedAt datetime = NaT
 
         Sweeping logical = false
 
@@ -418,39 +421,9 @@ classdef App < handle
 
             p = obj.Batch.Profile;
 
-            dlg = uiprogressdlg(obj.Figure, 'Title', 'VNA Setup', ...
-                'Message', "Setting up the VNA for " + p.Name + "...", ...
-                'Indeterminate', 'on');
-
-            try
-
-                obj.Driver.Config.Ports = p.Ports;
-
-                % Simulated VNA: make the simulated part a golden unit
-                if ismethod(obj.Driver, 'tuneToProfile') && p.PartType == "Filter"
-                    obj.Driver.tuneToProfile(p);
-                end
-
-                obj.Driver.pushStimulus(struct( ...
-                    'StartFreq', p.Stimulus.StartHz, ...
-                    'StopFreq', p.Stimulus.StopHz, ...
-                    'NumPoints', p.Stimulus.Points, ...
-                    'IFBW', p.Stimulus.IFBWHz, ...
-                    'Power', p.Stimulus.PowerdBm));
-
-            catch ME
-
-                delete(dlg);
-
-                obj.CalVerified = false;
-                obj.setCalStatus(false, "VNA setup failed: " + ME.message);
-                obj.refresh();
-
+            if ~obj.pushProfileSweep()
                 return
-
             end
-
-            delete(dlg);
 
             ports = strjoin(string(p.Ports), ", ");
 
@@ -473,6 +446,54 @@ classdef App < handle
             end
 
             obj.verifyCal();
+
+        end
+
+        function ok = pushProfileSweep(obj)
+            % Send the batch profile's ports and sweep to the VNA. Any
+            % change to the sweep requires the cal to be verified again.
+
+            ok = false;
+
+            if isempty(obj.Batch) || isempty(obj.Driver)
+                return
+            end
+
+            p = obj.Batch.Profile;
+
+            obj.CalVerified = false;
+
+            dlg = uiprogressdlg(obj.Figure, 'Title', 'VNA Setup', ...
+                'Message', "Setting up the VNA for " + p.Name + "...", ...
+                'Indeterminate', 'on');
+
+            cleanup = onCleanup(@() delete(dlg));
+
+            try
+
+                obj.Driver.Config.Ports = p.Ports;
+
+                % Simulated VNA: make the simulated part a golden unit
+                if ismethod(obj.Driver, 'tuneToProfile') && p.PartType == "Filter"
+                    obj.Driver.tuneToProfile(p);
+                end
+
+                obj.Driver.pushStimulus(struct( ...
+                    'StartFreq', p.Stimulus.StartHz, ...
+                    'StopFreq', p.Stimulus.StopHz, ...
+                    'NumPoints', p.Stimulus.Points, ...
+                    'IFBW', p.Stimulus.IFBWHz, ...
+                    'Power', p.Stimulus.PowerdBm));
+
+                ok = true;
+
+            catch ME
+
+                obj.setCalStatus(false, "VNA setup failed: " + ME.message);
+
+            end
+
+            obj.refresh();
 
         end
 
@@ -533,7 +554,11 @@ classdef App < handle
 
             obj.CalVerified = ok;
 
+            obj.CalVerifiedAt = NaT;
+
             if ok
+
+                obj.CalVerifiedAt = datetime("now");
 
                 name = obj.CalInfo.Calset;
 
@@ -990,6 +1015,7 @@ classdef App < handle
             obj.buildLogTab(uitab(tabs, 'Title', 'Log'));
             obj.buildReviewTab(uitab(tabs, 'Title', 'Review'));
             obj.buildReportsTab(uitab(tabs, 'Title', 'Reports'));
+            obj.buildInstrumentTab(uitab(tabs, 'Title', 'Instrument'));
 
             obj.H.Status = uilabel(main, 'Text', 'Starting...', ...
                 'FontSize', CATS.Theme.FontBase);
@@ -1230,36 +1256,47 @@ classdef App < handle
         end
 
         function buildLogTab(obj, tab)
+            % Every PASS / FAIL / SKIPPED at this station, read from the
+            % batch logs on disk (survives restarts).
 
-            g = uigridlayout(tab, [2 2]);
-            g.RowHeight = {40, '1x'};
-            g.ColumnWidth = {'1x', 'fit'};
+            g = uigridlayout(tab, [2 1]);
+            g.RowHeight = {44, '1x'};
             g.Padding = [10 10 10 10];
 
-            obj.H.LogSummary = uilabel(g, 'Text', 'No batch running.', ...
+            top = uigridlayout(g, [1 4]);
+            top.ColumnWidth = {'1x', 160, 120, 170};
+            top.Padding = [0 0 0 0];
+
+            obj.H.LogSummary = uilabel(top, 'Text', '', ...
                 'FontSize', CATS.Theme.FontLarge, 'FontWeight', 'bold');
 
-            obj.H.OpenData = uibutton(g, 'Text', 'Open Data Folder', ...
+            obj.H.LogRange = uidropdown(top, 'Items', {'Today','Last 7 days','Last 30 days'}, ...
+                'FontSize', CATS.Theme.FontBase, 'ValueChangedFcn', @(~,~) obj.updateLog());
+
+            obj.H.LogRefresh = uibutton(top, 'Text', 'Refresh', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.updateLog());
+
+            obj.H.OpenData = uibutton(top, 'Text', 'Open Data Folder', ...
                 'FontSize', CATS.Theme.FontBase, ...
                 'ButtonPushedFcn', @(~,~) obj.openFolder(obj.Settings.DataRoot));
 
             obj.H.Log = uitable(g, 'FontSize', 16, 'RowName', {}, ...
-                'ColumnName', {'Time','Serial','Result','Criteria','Retest'}, ...
-                'ColumnWidth', {120, '1x', 120, 120, 90}, ...
-                'Data', cell(0,5));
-            obj.place(obj.H.Log, 2, [1 2]);
+                'ColumnName', {'Time','Serial','Result','Failed criteria','Override statement', ...
+                'Retest','Operator','Part'}, ...
+                'ColumnWidth', {170, 170, 110, 220, '1x', 80, 140, 110}, ...
+                'Data', cell(0,8));
 
         end
 
         function buildReviewTab(obj, tab)
 
             g = uigridlayout(tab, [1 2]);
-            g.ColumnWidth = {340, '1x'};
+            g.ColumnWidth = {360, '1x'};
             g.Padding = [10 10 10 10];
             g.ColumnSpacing = 12;
 
             left = uigridlayout(g, [6 1]);
-            left.RowHeight = {44, 32, 32, 32, '1x', 'fit'};
+            left.RowHeight = {44, 30, 34, 30, '1x', 'fit'};
             left.Padding = [0 0 0 0];
 
             uibutton(left, 'Text', 'Load Touchstone Files...', ...
@@ -1271,7 +1308,7 @@ classdef App < handle
             obj.H.ReviewProfile = uidropdown(left, 'Items', {}, ...
                 'FontSize', CATS.Theme.FontBase, 'ValueChangedFcn', @(~,~) obj.updateReview());
 
-            uilabel(left, 'Text', 'Files (select to plot):', 'FontSize', CATS.Theme.FontBase);
+            uilabel(left, 'Text', 'Files (select up to 6 to compare):', 'FontSize', CATS.Theme.FontBase);
 
             obj.H.ReviewList = uilistbox(left, 'Items', {}, 'Multiselect', 'on', ...
                 'FontSize', CATS.Theme.FontBase, 'ValueChangedFcn', @(~,~) obj.updateReview());
@@ -1280,40 +1317,54 @@ classdef App < handle
                 'FontSize', CATS.Theme.FontBase);
 
             right = uigridlayout(g, [1 2]);
-            right.ColumnWidth = {'1x', 400};
+            right.ColumnWidth = {'1x', 640};
             right.Padding = [0 0 0 0];
 
-            obj.H.ReviewAxes = uiaxes(right, 'FontSize', 13);
-            xlabel(obj.H.ReviewAxes, 'Frequency (MHz)');
+            plots = uigridlayout(right, [2 1]);
+            plots.RowHeight = {'1x', '1x'};
+            plots.Padding = [0 0 0 0];
+            plots.RowSpacing = 4;
+
+            obj.H.ReviewAxes = uiaxes(plots, 'FontSize', 12);
             ylabel(obj.H.ReviewAxes, 'Magnitude (dB)');
             grid(obj.H.ReviewAxes, 'on');
 
-            obj.H.ReviewCriteria = uitable(right, 'FontSize', 16, 'RowName', {}, ...
-                'ColumnName', {'Criterion','Value','Limit','Result'}, ...
-                'ColumnWidth', {150, 90, 100, 60}, 'Data', cell(0,4));
+            obj.H.ReviewNarrowAxes = uiaxes(plots, 'FontSize', 12);
+            xlabel(obj.H.ReviewNarrowAxes, 'Frequency (MHz)');
+            ylabel(obj.H.ReviewNarrowAxes, 'Magnitude (dB)');
+            grid(obj.H.ReviewNarrowAxes, 'on');
+
+            obj.H.ReviewCriteria = uitable(right, 'FontSize', 15, 'RowName', {}, ...
+                'ColumnName', {'Criterion','Limit'}, 'Data', cell(0,2));
 
         end
 
         function buildReportsTab(obj, tab)
 
-            g = uigridlayout(tab, [3 1]);
-            g.RowHeight = {'fit', 'fit', '1x'};
+            g = uigridlayout(tab, [1 2]);
+            g.ColumnWidth = {780, '1x'};
             g.Padding = [10 10 10 10];
-            g.RowSpacing = 14;
+            g.ColumnSpacing = 14;
+
+            left = uigridlayout(g, [4 1]);
+            left.RowHeight = {'fit', 'fit', 'fit', '1x'};
+            left.Padding = [0 0 0 0];
+            left.RowSpacing = 14;
 
             %
             % Batch report
             %
-            p = uipanel(g, 'Title', 'Batch Report', 'FontSize', CATS.Theme.FontLarge, ...
+            p = uipanel(left, 'Title', 'Batch Report', 'FontSize', CATS.Theme.FontLarge, ...
                 'FontWeight', 'bold');
 
             b = uigridlayout(p, [1 3]);
-            b.ColumnWidth = {120, '1x', 220};
-            b.RowHeight = {36};
+            b.ColumnWidth = {90, '1x', 200};
+            b.RowHeight = {38};
 
             obj.label(b, 'Batch', 1, 1);
 
-            obj.H.BatchList = uidropdown(b, 'Items', {}, 'FontSize', CATS.Theme.FontBase);
+            obj.H.BatchList = uidropdown(b, 'Items', {}, 'FontSize', CATS.Theme.FontBase, ...
+                'ValueChangedFcn', @(~,~) obj.previewBatch());
             obj.place(obj.H.BatchList, 1, 2);
 
             obj.H.WriteBatchReport = uibutton(b, 'Text', 'Write Batch Report', ...
@@ -1324,45 +1375,215 @@ classdef App < handle
             %
             % Day / shift report
             %
-            p = uipanel(g, 'Title', 'Day / Shift Report', 'FontSize', CATS.Theme.FontLarge, ...
+            p = uipanel(left, 'Title', 'Day / Shift Report', 'FontSize', CATS.Theme.FontLarge, ...
                 'FontWeight', 'bold');
 
-            d = uigridlayout(p, [3 5]);
-            d.ColumnWidth = {120, 180, 90, 120, '1x'};
-            d.RowHeight = {36, 36, 40};
+            d = uigridlayout(p, [5 4]);
+            d.ColumnWidth = {90, 170, 90, '1x'};
+            d.RowHeight = {38, 38, 38, 38, 42};
 
-            obj.label(d, 'From', 1, 1);
+            quick = uigridlayout(d, [1 3]);
+            quick.Padding = [0 0 0 0];
+            obj.place(quick, 1, [1 4]);
+
+            uibutton(quick, 'Text', 'Today', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.setReportRange("today"), 'Tag', 'CATS_RangeToday');
+            uibutton(quick, 'Text', 'Yesterday', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.setReportRange("yesterday"), 'Tag', 'CATS_RangeYesterday');
+            uibutton(quick, 'Text', 'Last 8 Hours', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.setReportRange("shift"), 'Tag', 'CATS_RangeShift');
+
+            obj.label(d, 'From', 2, 1);
             obj.H.FromDate = uidatepicker(d, 'Value', datetime("today"), ...
-                'FontSize', CATS.Theme.FontBase, 'DisplayFormat', 'yyyy-MM-dd');
-            obj.place(obj.H.FromDate, 1, 2);
+                'FontSize', CATS.Theme.FontBase, 'DisplayFormat', 'yyyy-MM-dd', ...
+                'ValueChangedFcn', @(~,~) obj.previewRange());
+            obj.place(obj.H.FromDate, 2, 2);
             obj.H.FromTime = uieditfield(d, 'text', 'Value', '00:00', ...
-                'FontSize', CATS.Theme.FontBase, 'Tooltip', 'HH:mm (24 h)');
-            obj.place(obj.H.FromTime, 1, 3);
+                'FontSize', CATS.Theme.FontBase, 'Tooltip', 'HH:mm (24 h)', ...
+                'ValueChangedFcn', @(~,~) obj.previewRange());
+            obj.place(obj.H.FromTime, 2, 3);
 
-            obj.label(d, 'Part', 1, 4);
-            obj.H.ReportProfile = uidropdown(d, 'Items', {}, 'FontSize', CATS.Theme.FontBase);
-            obj.place(obj.H.ReportProfile, 1, 5);
-
-            obj.label(d, 'To', 2, 1);
+            obj.label(d, 'To', 3, 1);
             obj.H.ToDate = uidatepicker(d, 'Value', datetime("today"), ...
-                'FontSize', CATS.Theme.FontBase, 'DisplayFormat', 'yyyy-MM-dd');
-            obj.place(obj.H.ToDate, 2, 2);
+                'FontSize', CATS.Theme.FontBase, 'DisplayFormat', 'yyyy-MM-dd', ...
+                'ValueChangedFcn', @(~,~) obj.previewRange());
+            obj.place(obj.H.ToDate, 3, 2);
             obj.H.ToTime = uieditfield(d, 'text', 'Value', '23:59', ...
-                'FontSize', CATS.Theme.FontBase, 'Tooltip', 'HH:mm (24 h)');
-            obj.place(obj.H.ToTime, 2, 3);
+                'FontSize', CATS.Theme.FontBase, 'Tooltip', 'HH:mm (24 h)', ...
+                'ValueChangedFcn', @(~,~) obj.previewRange());
+            obj.place(obj.H.ToTime, 3, 3);
 
-            obj.label(d, 'Operator', 2, 4);
+            obj.label(d, 'Part', 4, 1);
+            obj.H.ReportProfile = uidropdown(d, 'Items', {}, 'FontSize', CATS.Theme.FontBase, ...
+                'ValueChangedFcn', @(~,~) obj.previewRange());
+            obj.place(obj.H.ReportProfile, 4, 2);
+
+            obj.label(d, 'Operator', 4, 3);
             obj.H.ReportOperator = uidropdown(d, 'Items', {'All operators'}, ...
-                'FontSize', CATS.Theme.FontBase);
-            obj.place(obj.H.ReportOperator, 2, 5);
+                'FontSize', CATS.Theme.FontBase, 'ValueChangedFcn', @(~,~) obj.previewRange());
+            obj.place(obj.H.ReportOperator, 4, 4);
 
             obj.H.WriteRangeReport = uibutton(d, 'Text', 'Write Report', ...
                 'FontSize', CATS.Theme.FontBase, ...
                 'ButtonPushedFcn', @(~,~) obj.onWriteRangeReport());
-            obj.place(obj.H.WriteRangeReport, 3, 5);
+            obj.place(obj.H.WriteRangeReport, 5, [2 4]);
 
-            obj.H.ReportStatus = uilabel(g, 'Text', '', 'WordWrap', 'on', ...
-                'FontSize', CATS.Theme.FontBase, 'VerticalAlignment', 'top');
+            %
+            % Result of the last write
+            %
+            s = uigridlayout(left, [1 2]);
+            s.ColumnWidth = {'1x', 150};
+            s.Padding = [0 0 0 0];
+
+            obj.H.ReportStatus = uilabel(s, 'Text', '', 'WordWrap', 'on', ...
+                'FontSize', CATS.Theme.FontBase);
+
+            obj.H.OpenReportFolder = uibutton(s, 'Text', 'Open Folder', ...
+                'FontSize', CATS.Theme.FontBase, 'Enable', 'off', ...
+                'ButtonPushedFcn', @(~,~) obj.openFolder(fileparts(obj.H.OpenReportFolder.UserData)));
+
+            %
+            % Preview of what will be reported
+            %
+            p = uipanel(g, 'Title', 'Preview', 'FontSize', CATS.Theme.FontLarge, ...
+                'FontWeight', 'bold');
+
+            v = uigridlayout(p, [2 1]);
+            v.RowHeight = {32, '1x'};
+
+            obj.H.ReportPreviewSummary = uilabel(v, 'Text', '', ...
+                'FontSize', CATS.Theme.FontBase, 'FontWeight', 'bold');
+
+            obj.H.ReportPreview = uitable(v, 'FontSize', 15, 'RowName', {}, ...
+                'ColumnName', {'Serial','Time','Operator','Result','Notes'}, ...
+                'ColumnWidth', {150, 160, 120, 90, '1x'}, 'Data', cell(0,5));
+
+        end
+
+        function buildInstrumentTab(obj, tab)
+            % What the VNA is doing: connection, sweep vs profile,
+            % calibration and errors. Read-only unless Engineering Mode.
+
+            g = uigridlayout(tab, [2 2]);
+            g.RowHeight = {'fit', '1x'};
+            g.ColumnWidth = {'1x', '1x'};
+            g.Padding = [10 10 10 10];
+            g.RowSpacing = 14;
+            g.ColumnSpacing = 14;
+
+            %
+            % Connection
+            %
+            p = uipanel(g, 'Title', 'Connection', 'FontSize', CATS.Theme.FontLarge, ...
+                'FontWeight', 'bold');
+
+            c = uigridlayout(p, [5 2]);
+            c.ColumnWidth = {130, '1x'};
+            c.RowHeight = {30, 30, 30, 30, 42};
+
+            obj.label(c, 'Model', 1, 1);
+            obj.H.InstModel = uilabel(c, 'Text', '-', 'FontSize', CATS.Theme.FontBase);
+            obj.place(obj.H.InstModel, 1, 2);
+
+            obj.label(c, 'Identity', 2, 1);
+            obj.H.InstIdn = uilabel(c, 'Text', '-', 'FontSize', CATS.Theme.FontBase);
+            obj.place(obj.H.InstIdn, 2, 2);
+
+            obj.label(c, 'Address', 3, 1);
+            obj.H.InstAddress = uilabel(c, 'Text', '-', 'FontSize', CATS.Theme.FontBase);
+            obj.place(obj.H.InstAddress, 3, 2);
+
+            obj.label(c, 'Reconnects', 4, 1);
+            obj.H.InstReconnects = uilabel(c, 'Text', '-', 'FontSize', CATS.Theme.FontBase);
+            obj.place(obj.H.InstReconnects, 4, 2);
+
+            cb = uigridlayout(c, [1 3]);
+            cb.Padding = [0 0 0 0];
+            obj.place(cb, 5, [1 2]);
+
+            obj.H.InstRead = uibutton(cb, 'Text', 'Read VNA', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.refreshInstrument());
+
+            obj.H.InstReconnect = uibutton(cb, 'Text', 'Reconnect', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.onInstrumentReconnect());
+
+            obj.H.InstFind = uibutton(cb, 'Text', 'Find VNA...', 'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.connectVNA());
+
+            %
+            % Sweep: VNA vs profile
+            %
+            p = uipanel(g, 'Title', 'Sweep', 'FontSize', CATS.Theme.FontLarge, ...
+                'FontWeight', 'bold');
+
+            s = uigridlayout(p, [2 3]);
+            s.RowHeight = {'1x', 42};
+            s.ColumnWidth = {'1x', 'fit', 170};
+
+            obj.H.InstSweep = uitable(s, 'FontSize', 15, 'RowName', {}, ...
+                'ColumnName', {'Setting','On VNA','Profile','Match'}, ...
+                'ColumnWidth', {'2x', '2x', '2x', '1x'}, 'Data', cell(0,4), ...
+                'ColumnEditable', [false false false false]);
+            obj.place(obj.H.InstSweep, 1, [1 3]);
+
+            obj.H.EngMode = uicheckbox(s, 'Text', 'Engineering mode (edit and push sweep)', ...
+                'FontSize', CATS.Theme.FontBase, 'ValueChangedFcn', @(~,~) obj.onEngineeringMode());
+            obj.place(obj.H.EngMode, 2, [1 2]);
+
+            obj.H.InstPush = uibutton(s, 'Text', 'Push to VNA', 'FontSize', CATS.Theme.FontBase, ...
+                'Enable', 'off', 'ButtonPushedFcn', @(~,~) obj.onEngineeringPush());
+            obj.place(obj.H.InstPush, 2, 3);
+
+            %
+            % Calibration
+            %
+            p = uipanel(g, 'Title', 'Calibration', 'FontSize', CATS.Theme.FontLarge, ...
+                'FontWeight', 'bold');
+
+            k = uigridlayout(p, [4 2]);
+            k.ColumnWidth = {130, '1x'};
+            k.RowHeight = {30, 30, '1x', 42};
+
+            obj.label(k, 'Cal set', 1, 1);
+            obj.H.InstCalset = uilabel(k, 'Text', '-', 'FontSize', CATS.Theme.FontBase);
+            obj.place(obj.H.InstCalset, 1, 2);
+
+            obj.label(k, 'Verified', 2, 1);
+            obj.H.InstVerified = uilabel(k, 'Text', '-', 'FontSize', CATS.Theme.FontBase);
+            obj.place(obj.H.InstVerified, 2, 2);
+
+            obj.H.InstCorrection = uitable(k, 'FontSize', 15, 'RowName', {}, ...
+                'ColumnName', {'Parameter','Error correction'}, 'Data', cell(0,2));
+            obj.place(obj.H.InstCorrection, 3, [1 2]);
+
+            kb = uigridlayout(k, [1 2]);
+            kb.Padding = [0 0 0 0];
+            obj.place(kb, 4, [1 2]);
+
+            obj.H.InstRepush = uibutton(kb, 'Text', 'Re-push Profile Sweep', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'Tooltip', 'Send the batch profile''s sweep to the VNA again, then re-verify the cal', ...
+                'ButtonPushedFcn', @(~,~) obj.onRepushProfile());
+
+            obj.H.InstVerifyCal = uibutton(kb, 'Text', 'Re-verify Cal', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.onInstrumentVerify());
+
+            %
+            % Errors
+            %
+            p = uipanel(g, 'Title', 'VNA Errors', 'FontSize', CATS.Theme.FontLarge, ...
+                'FontWeight', 'bold');
+
+            e = uigridlayout(p, [2 1]);
+            e.RowHeight = {'1x', 42};
+
+            obj.H.InstErrors = uilistbox(e, 'Items', {'(not read yet)'}, ...
+                'FontSize', CATS.Theme.FontBase);
+
+            obj.H.InstReadErrors = uibutton(e, 'Text', 'Read and Clear Errors', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.onReadErrors());
 
         end
 
@@ -1523,6 +1744,21 @@ classdef App < handle
             end
 
             obj.refreshDecisionButtons();
+
+            %
+            % Instrument tab (no VNA access while sweeping)
+            %
+            idle = connected && ~obj.Sweeping;
+
+            for b = ["InstRead","InstReconnect","InstReadErrors"]
+                obj.H.(b).Enable = idle;
+            end
+
+            obj.H.InstFind.Enable = ~obj.Sweeping;
+            obj.H.EngMode.Enable = idle;
+            obj.H.InstPush.Enable = idle && logical(obj.H.EngMode.Value);
+            obj.H.InstRepush.Enable = idle && batch;
+            obj.H.InstVerifyCal.Enable = idle && batch;
 
             %
             % Profile lists on other tabs
@@ -1894,62 +2130,82 @@ classdef App < handle
         end
 
         function updateLog(obj)
+            % Log tab: batch-log rows from disk for the chosen period,
+            % newest first, plus a summary of the running batch.
 
-            recs = obj.Records;
+            if isempty(obj.Figure) || ~isvalid(obj.Figure)
+                return
+            end
 
-            n = numel(recs);
+            switch string(obj.H.LogRange.Value)
+                case "Last 7 days"
+                    back = 6;
+                case "Last 30 days"
+                    back = 29;
+                otherwise
+                    back = 0;
+            end
 
-            data = cell(n, 5);
+            try
+                log = CATS.Storage.readLogs(obj.Settings.DataRoot, ...
+                    datetime("today") - caldays(back), datetime("today"));
+            catch ME
+                obj.H.LogSummary.Text = "Could not read the logs: " + ME.message;
+                return
+            end
+
+            n = height(log);
+
+            data = cell(n, 8);
 
             for k = 1:n
-                r = recs(n - k + 1);          % newest first
-                data{k,1} = char(string(r.Timestamp, "HH:mm:ss"));
-                data{k,2} = char(r.Serial);
-                data{k,3} = char(r.Decision);
-                if r.Decision == "SKIPPED"
-                    data{k,4} = '';
-                elseif strlength(r.Override) > 0
-                    data{k,4} = char("override " + extractBefore(r.Override + ":", ":"));
-                else
-                    data{k,4} = char(ifelse(r.ComputedPass, "all pass", "out of spec"));
+
+                data{k,1} = char(string(log.Timestamp(k), "yyyy-MM-dd HH:mm:ss"));
+                data{k,2} = char(log.Serial(k));
+                data{k,3} = char(log.Decision(k));
+                data{k,4} = char(log.Failed(k));
+
+                note = log.Override(k);
+
+                if strlength(note) > 0
+                    note = "Override " + note;
                 end
-                data{k,5} = char(ifelse(r.Retest, "retest", ""));
+
+                data{k,5} = char(note);
+                data{k,6} = char(ifelse(log.Retest(k), "retest", ""));
+                data{k,7} = char(log.Operator(k));
+                data{k,8} = char(log.Profile(k));
+
             end
 
             obj.H.Log.Data = data;
 
             removeStyle(obj.H.Log);
 
-            if n > 0
-                decisions = string(data(:,3));
-                fail = find(decisions == "FAIL");
-                pass = find(decisions == "PASS");
-                if ~isempty(fail)
-                    addStyle(obj.H.Log, uistyle('BackgroundColor', CATS.Theme.Warning, ...
-                        'FontColor', CATS.Theme.OnStatus), 'cell', [fail(:) repmat(3,numel(fail),1)]);
-                end
-                if ~isempty(pass)
-                    addStyle(obj.H.Log, uistyle('BackgroundColor', CATS.Theme.Success, ...
-                        'FontColor', CATS.Theme.OnStatus), 'cell', [pass(:) repmat(3,numel(pass),1)]);
-                end
-            end
+            styleColumn(obj.H.Log, find(log.Decision == "PASS"), 3, CATS.Theme.Success);
+            styleColumn(obj.H.Log, find(log.Decision == "FAIL"), 3, CATS.Theme.Warning);
 
-            if isempty(obj.Batch)
+            %
+            % Summary
+            %
+            count = @(rows, d) sum(rows.Decision == d);
 
-                obj.H.LogSummary.Text = 'No batch running.';
+            if ~isempty(obj.Batch)
+
+                b = log(log.BatchId == obj.Batch.Id, :);
+
+                obj.H.LogSummary.Text = sprintf( ...
+                    'Batch %s  %s  %s:  Tested %d   PASS %d   FAIL %d   Skipped %d', ...
+                    obj.Batch.Profile.Name, obj.Batch.Id, obj.Batch.Operator, ...
+                    height(b) - count(b,"SKIPPED"), count(b,"PASS"), ...
+                    count(b,"FAIL"), count(b,"SKIPPED"));
 
             else
 
-                d = strings(0,1);
-
-                if ~isempty(recs)
-                    d = [recs.Decision];
-                end
-
                 obj.H.LogSummary.Text = sprintf( ...
-                    '%s   %s   Operator %s      Tested %d    PASS %d    FAIL %d    Skipped %d', ...
-                    obj.Batch.Profile.Name, obj.Batch.Id, obj.Batch.Operator, ...
-                    sum(d ~= "SKIPPED"), sum(d == "PASS"), sum(d == "FAIL"), sum(d == "SKIPPED"));
+                    '%s:  Tested %d   PASS %d   FAIL %d   Skipped %d', ...
+                    string(obj.H.LogRange.Value), n - count(log,"SKIPPED"), ...
+                    count(log,"PASS"), count(log,"FAIL"), count(log,"SKIPPED"));
 
             end
 
@@ -2007,8 +2263,13 @@ classdef App < handle
 
         function onTabChanged(obj, tab)
 
-            if tab.Title == "Reports"
-                obj.refreshReportLists();
+            switch string(tab.Title)
+                case "Log"
+                    obj.updateLog();
+                case "Reports"
+                    obj.refreshReportLists();
+                case "Instrument"
+                    obj.refreshInstrument();
             end
 
         end
@@ -2028,71 +2289,180 @@ classdef App < handle
 
         end
 
+        %==========================================================
+        % REVIEW
+        %==========================================================
         function updateReview(obj)
+            % Overlay the selected files (wideband + passband) and show
+            % every criterion for each of them side by side.
 
-            ax = obj.H.ReviewAxes;
+            axesList = [obj.H.ReviewAxes, obj.H.ReviewNarrowAxes];
 
-            cla(ax);
+            for ax = axesList
+                cla(ax);
+                legend(ax, 'off');
+            end
 
-            obj.H.ReviewCriteria.Data = cell(0,4);
+            obj.H.ReviewCriteria.Data = cell(0,2);
+            obj.H.ReviewCriteria.ColumnName = {'Criterion','Limit'};
+            removeStyle(obj.H.ReviewCriteria);
             obj.H.ReviewInfo.Text = '';
 
             if isempty(obj.ReviewItems) || isempty(obj.H.ReviewList.Value)
                 return
             end
 
-            selected = obj.ReviewItems(obj.H.ReviewList.Value);
+            sel = obj.H.ReviewList.Value;
+            sel = sel(1:min(6, numel(sel)));
 
-            hold(ax, 'on');
-
-            for item = selected
-                s = item.SParams;
-                f = s.Frequencies/1e6;
-                plot(ax, f, 20*log10(abs(squeeze(s.Parameters(2,1,:)))), ...
-                    'LineWidth', 1.4, 'DisplayName', item.Name + " S21");
-                if s.NumPorts >= 3
-                    plot(ax, f, 20*log10(abs(squeeze(s.Parameters(3,1,:)))), ...
-                        'LineWidth', 1.4, 'DisplayName', item.Name + " S31");
-                end
-            end
-
-            hold(ax, 'off');
-
-            grid(ax, 'on');
-
-            legend(ax, 'Location', 'southwest', 'Interpreter', 'none', 'FontSize', 11);
-
-            % Criteria for the first selected file
-            first = selected(1);
+            items = obj.ReviewItems(sel);
 
             profile = obj.profileByName(string(obj.H.ReviewProfile.Value));
 
-            info = first.Name;
+            colors = colororder(obj.H.ReviewAxes);
 
-            if ~isempty(first.Record)
-                info = sprintf('%s\n%s by %s on %s', first.Name, first.Record.Decision, ...
-                    first.Record.Operator, string(first.Record.Timestamp, "yyyy-MM-dd HH:mm"));
+            %
+            % Traces: transmission solid, input reflection dashed, one
+            % colour per file
+            %
+            for a = 1:2
+
+                ax = axesList(a);
+
+                hold(ax, 'on');
+
+                for k = 1:numel(items)
+
+                    s = items(k).SParams;
+                    f = s.Frequencies/1e6;
+                    c = colors(mod(k-1, size(colors,1)) + 1, :);
+                    name = CATS.App.shortName(items(k));
+
+                    for r = 2:min(3, s.NumPorts)
+                        plot(ax, f, 20*log10(abs(squeeze(s.Parameters(r,1,:)))), '-', ...
+                            'Color', c, 'LineWidth', 1.4, 'DisplayName', sprintf('%s S%d1', name, r));
+                    end
+
+                    plot(ax, f, 20*log10(abs(squeeze(s.Parameters(1,1,:)))), '--', ...
+                        'Color', c, 'LineWidth', 1.1, 'DisplayName', name + " S11");
+
+                end
+
+                hold(ax, 'off');
+                grid(ax, 'on');
+
             end
 
-            if ~isempty(profile) && first.SParams.NumPorts >= numel(profile.Ports)
+            legend(obj.H.ReviewAxes, 'Location', 'southwest', 'Interpreter', 'none', 'FontSize', 10);
 
-                results = Specs.evaluate(first.SParams, profile);
+            first = items(1).SParams;
 
-                obj.showCriteria(obj.H.ReviewCriteria, results);
+            if ~isempty(profile)
+                [wideX, narrowX, wideY, narrowY] = CATS.App.plotLimits(profile);
+            else
+                wideX = first.Frequencies([1 end]).';
+                narrowX = wideX;
+                wideY = [-80 5];
+                narrowY = [-40 2];
+            end
 
-                Specs.drawSpecOverlays(ax, results, ...
-                    PassColor = CATS.Theme.Success, FailColor = CATS.Theme.Warning);
+            xlim(obj.H.ReviewAxes, wideX/1e6);
+            ylim(obj.H.ReviewAxes, wideY);
+            xlim(obj.H.ReviewNarrowAxes, narrowX/1e6);
+            ylim(obj.H.ReviewNarrowAxes, narrowY);
 
-                info = sprintf('%s\nAgainst %s: %s', info, profile.Name, ...
-                    ifelse(all(results.Pass), "all criteria pass", ...
-                    sum(~results.Pass) + " criteria fail"));
+            title(obj.H.ReviewAxes, 'Full sweep', 'FontSize', 13);
+            title(obj.H.ReviewNarrowAxes, 'Passband', 'FontSize', 13);
+
+            %
+            % Criteria: one column per file
+            %
+            info = string(sprintf('%d file(s) selected.', numel(items)));
+
+            if isempty(profile) || first.NumPorts < numel(profile.Ports)
+                obj.H.ReviewInfo.Text = info + " Choose a matching part profile to judge them.";
+                return
+            end
+
+            nc = numel(profile.Criteria);
+
+            data = cell(nc, 2 + numel(items));
+            names = {'Criterion', 'Limit'};
+            passCells = zeros(0,2);
+            failCells = zeros(0,2);
+            summary = strings(0,1);
+
+            for k = 1:numel(items)
+
+                r = Specs.evaluate(items(k).SParams, profile);
+
+                names{end+1} = char(CATS.App.shortName(items(k))); %#ok<AGROW>
+
+                for j = 1:nc
+
+                    if k == 1
+                        data{j,1} = char(r.Label(j));
+                        data{j,2} = char(CATS.App.formatLimit(r.Type(j), r.Limit(j), r.Units(j)));
+                    end
+
+                    data{j,2+k} = char(CATS.App.formatValue(r.Value(j), r.Units(j)));
+
+                    if r.Pass(j)
+                        passCells(end+1,:) = [j, 2+k]; %#ok<AGROW>
+                    else
+                        failCells(end+1,:) = [j, 2+k]; %#ok<AGROW>
+                    end
+
+                end
+
+                if k == 1
+                    obj.drawReviewOverlays(r);
+                end
+
+                verdict = ifelse(all(r.Pass), "all pass", strjoin(r.Id(~r.Pass), ", ") + " fail");
+
+                rec = items(k).Record;
+
+                if ~isempty(rec)
+                    verdict = verdict + sprintf("  (saved %s by %s)", rec.Decision, rec.Operator);
+                end
+
+                summary(end+1) = names{end} + ": " + verdict; %#ok<AGROW>
 
             end
 
-            obj.H.ReviewInfo.Text = info;
+            obj.H.ReviewCriteria.ColumnName = names;
+            obj.H.ReviewCriteria.ColumnWidth = [{170, 110}, repmat({'1x'}, 1, numel(items))];
+            obj.H.ReviewCriteria.Data = data;
+
+            if ~isempty(passCells)
+                addStyle(obj.H.ReviewCriteria, uistyle('BackgroundColor', CATS.Theme.Success, ...
+                    'FontColor', CATS.Theme.OnStatus), 'cell', passCells);
+            end
+
+            if ~isempty(failCells)
+                addStyle(obj.H.ReviewCriteria, uistyle('BackgroundColor', CATS.Theme.Warning, ...
+                    'FontColor', CATS.Theme.OnStatus), 'cell', failCells);
+            end
+
+            obj.H.ReviewInfo.Text = info + newline + "Against " + profile.Name + ":" + ...
+                newline + strjoin(summary, newline) + newline + ...
+                "(Limit lines shown for the first file.)";
 
         end
 
+        function drawReviewOverlays(obj, results)
+
+            for ax = [obj.H.ReviewAxes, obj.H.ReviewNarrowAxes]
+                Specs.drawSpecOverlays(ax, results, ...
+                    PassColor = CATS.Theme.Success, FailColor = CATS.Theme.Warning);
+            end
+
+        end
+
+        %==========================================================
+        % REPORTS
+        %==========================================================
         function refreshReportLists(obj)
 
             files = dir(fullfile(obj.Settings.DataRoot, '*', '*', 'Batch_*.csv'));
@@ -2126,6 +2496,133 @@ classdef App < handle
 
             obj.setItems(obj.H.ReportOperator, cellstr(operators));
 
+            obj.previewRange();
+
+        end
+
+        function setReportRange(obj, kind)
+
+            now_ = datetime("now");
+
+            switch kind
+
+                case "yesterday"
+                    from = datetime("today") - caldays(1);
+                    to = datetime("today") - seconds(60);
+
+                case "shift"
+                    from = now_ - hours(8);
+                    to = now_;
+
+                otherwise
+                    from = datetime("today");
+                    to = datetime("today") + hours(23) + minutes(59);
+
+            end
+
+            obj.H.FromDate.Value = dateshift(from, 'start', 'day');
+            obj.H.FromTime.Value = char(string(from, "HH:mm"));
+            obj.H.ToDate.Value = dateshift(to, 'start', 'day');
+            obj.H.ToTime.Value = char(string(to, "HH:mm"));
+
+            obj.previewRange();
+
+        end
+
+        function [from, to, ok] = reportRange(obj)
+
+            ok = true;
+
+            try
+                from = obj.H.FromDate.Value + duration(obj.H.FromTime.Value, 'InputFormat', 'hh:mm');
+                to = obj.H.ToDate.Value + duration(obj.H.ToTime.Value, 'InputFormat', 'hh:mm') + seconds(59);
+            catch
+                [from, to] = deal(NaT);
+                ok = false;
+            end
+
+        end
+
+        function previewRange(obj)
+
+            [from, to, ok] = obj.reportRange();
+
+            if ~ok
+                obj.showPreview(struct([]), "Times must be HH:mm (24 h).");
+                return
+            end
+
+            operator = string(obj.H.ReportOperator.Value);
+
+            if operator == "All operators"
+                operator = "";
+            end
+
+            profileName = string(obj.H.ReportProfile.Value);
+
+            records = CATS.Storage.latestPerSerial(CATS.Storage.readRecords( ...
+                obj.Settings.DataRoot, From = from, To = to, ...
+                Profile = profileName, Operator = operator));
+
+            obj.showPreview(records, sprintf('%s, %s to %s', profileName, ...
+                string(from, "yyyy-MM-dd HH:mm"), string(to, "yyyy-MM-dd HH:mm")));
+
+        end
+
+        function previewBatch(obj)
+
+            if isempty(obj.H.BatchList.Value)
+                return
+            end
+
+            [~, name] = fileparts(string(obj.H.BatchList.Value));
+
+            id = extractAfter(name, "Batch_");
+
+            records = CATS.Storage.latestPerSerial( ...
+                CATS.Storage.readRecords(obj.Settings.DataRoot, BatchId = id));
+
+            obj.showPreview(records, "Batch " + id);
+
+        end
+
+        function showPreview(obj, records, title)
+
+            n = numel(records);
+
+            data = cell(n, 5);
+
+            for k = 1:n
+                r = records(k);
+                data{k,1} = char(r.Serial);
+                data{k,2} = char(string(r.Timestamp, "yyyy-MM-dd HH:mm"));
+                data{k,3} = char(r.Operator);
+                data{k,4} = char(r.Decision);
+                if strlength(r.Override) > 0
+                    data{k,5} = char("Override " + r.Override);
+                else
+                    data{k,5} = '';
+                end
+            end
+
+            obj.H.ReportPreview.Data = data;
+
+            removeStyle(obj.H.ReportPreview);
+
+            if n == 0
+                obj.H.ReportPreviewSummary.Text = title + ":  no parts";
+                return
+            end
+
+            d = [records.Decision];
+            o = strlength([records.Override]) > 0;
+
+            styleColumn(obj.H.ReportPreview, find(d == "PASS"), 4, CATS.Theme.Success);
+            styleColumn(obj.H.ReportPreview, find(d == "FAIL"), 4, CATS.Theme.Warning);
+
+            obj.H.ReportPreviewSummary.Text = sprintf('%s:  %d parts   PASS %d (%d with override)   FAIL %d', ...
+                title, n, sum(d == "PASS"), sum(o), sum(d == "FAIL"));
+
         end
 
         function onWriteBatchReport(obj)
@@ -2156,37 +2653,295 @@ classdef App < handle
                 'ReportFile', fullfile(folder, "Report_" + profileName + "_" + id + ".xlsx"));
 
             try
-                file = obj.writeBatchReport(batch);
-                obj.H.ReportStatus.Text = "Report written: " + file;
-                obj.openFolder(fileparts(file));
+                obj.reportWritten(obj.writeBatchReport(batch));
             catch ME
-                obj.H.ReportStatus.Text = "Report failed: " + ME.message;
+                obj.reportWritten("", "Report failed: " + ME.message);
             end
 
         end
 
         function onWriteRangeReport(obj)
 
+            [from, to, ok] = obj.reportRange();
+
+            if ~ok
+                obj.reportWritten("", "Times must be HH:mm (24 h).");
+                return
+            end
+
+            operator = string(obj.H.ReportOperator.Value);
+
+            if operator == "All operators"
+                operator = "";
+            end
+
             try
+                obj.reportWritten(obj.writeRangeReport( ...
+                    string(obj.H.ReportProfile.Value), from, to, operator));
+            catch ME
+                obj.reportWritten("", "Report failed: " + ME.message);
+            end
 
-                from = obj.H.FromDate.Value + duration(obj.H.FromTime.Value, 'InputFormat', 'hh:mm');
-                to = obj.H.ToDate.Value + duration(obj.H.ToTime.Value, 'InputFormat', 'hh:mm') + seconds(59);
+        end
 
-                operator = string(obj.H.ReportOperator.Value);
+        function reportWritten(obj, file, message)
 
-                if operator == "All operators"
-                    operator = "";
+            if strlength(file) > 0
+                obj.H.ReportStatus.Text = "Report written: " + file;
+                obj.H.OpenReportFolder.UserData = char(file);
+                obj.H.OpenReportFolder.Enable = 'on';
+            else
+                obj.H.ReportStatus.Text = message;
+            end
+
+        end
+
+        %==========================================================
+        % INSTRUMENT
+        %==========================================================
+        function refreshInstrument(obj)
+            % Read the VNA and show it next to what the profile expects.
+
+            if isempty(obj.Figure) || ~isvalid(obj.Figure)
+                return
+            end
+
+            connected = ~isempty(obj.Driver);
+
+            if ~connected
+
+                for h = ["InstModel","InstIdn","InstAddress","InstReconnects","InstCalset","InstVerified"]
+                    obj.H.(h).Text = '-';
                 end
 
-                file = obj.writeRangeReport(string(obj.H.ReportProfile.Value), from, to, operator);
+                obj.H.InstSweep.Data = cell(0,4);
+                obj.H.InstCorrection.Data = cell(0,2);
+                obj.refresh();
 
-                obj.H.ReportStatus.Text = "Report written: " + file;
+                return
 
-                obj.openFolder(fileparts(file));
+            end
+
+            obj.H.InstModel.Text = obj.VNAInfo.Model;
+            obj.H.InstIdn.Text = obj.VNAInfo.IDN;
+            obj.H.InstAddress.Text = obj.VNAInfo.Resource;
+            obj.H.InstReconnects.Text = string(obj.Driver.ReconnectCount);
+
+            if isnat(obj.CalVerifiedAt)
+                obj.H.InstVerified.Text = 'Not verified';
+            else
+                obj.H.InstVerified.Text = string(obj.CalVerifiedAt, "yyyy-MM-dd HH:mm:ss");
+            end
+
+            if obj.Sweeping
+                obj.setStatus("Stop sweeping to read the VNA settings.");
+                obj.refresh();
+                return
+            end
+
+            %
+            % Sweep: VNA vs profile
+            %
+            if ~isempty(obj.Batch)
+                profile = obj.Batch.Profile;
+            else
+                profile = obj.selectedProfile();
+            end
+
+            try
+                s = obj.Driver.readInstrumentSettings();
+            catch ME
+                s = [];
+                obj.setStatus("Could not read the VNA sweep: " + ME.message);
+            end
+
+            names = ["Start (MHz)"; "Stop (MHz)"; "Points"; "IFBW (kHz)"; "Power (dBm)"];
+            data = cell(5, 4);
+            match = false(5,1);
+
+            if ~isempty(s)
+                vna = [s.StartFreq/1e6; s.StopFreq/1e6; s.NumPoints; s.IFBW/1e3; s.Power];
+            else
+                vna = NaN(5,1);
+            end
+
+            if ~isempty(profile)
+                st = profile.Stimulus;
+                ref = [st.StartHz/1e6; st.StopHz/1e6; st.Points; st.IFBWHz/1e3; st.PowerdBm];
+            else
+                ref = NaN(5,1);
+            end
+
+            for k = 1:5
+                data{k,1} = char(names(k));
+                data{k,2} = vna(k);
+                data{k,3} = ref(k);
+                match(k) = abs(vna(k) - ref(k)) <= 1e-6*max(1, abs(ref(k)));
+                data{k,4} = char(ifelse(match(k), "OK", ifelse(isnan(ref(k)), "-", "DIFFERENT")));
+            end
+
+            obj.H.InstSweep.Data = data;
+            removeStyle(obj.H.InstSweep);
+            styleColumn(obj.H.InstSweep, find(match), 4, CATS.Theme.Success);
+            styleColumn(obj.H.InstSweep, find(~match & ~isnan(ref)), 4, CATS.Theme.Warning);
+
+            if ~isempty(profile)
+                obj.H.InstSweep.ColumnName = {'Setting','On VNA','Profile ' + profile.Name,'Match'};
+            end
+
+            %
+            % Calibration
+            %
+            try
+
+                cal = obj.Driver.getCalInfo();
+
+                name = string(cal.Calset);
+                if strlength(name) == 0
+                    name = "(none)";
+                end
+
+                obj.H.InstCalset.Text = name;
+
+                rows = numel(cal.Parameters);
+                cd = cell(rows, 2);
+                for k = 1:rows
+                    cd{k,1} = char(cal.Parameters(k));
+                    cd{k,2} = char(ifelse(cal.ParameterOn(k), "ON", "OFF"));
+                end
+
+                obj.H.InstCorrection.Data = cd;
+                removeStyle(obj.H.InstCorrection);
+                styleColumn(obj.H.InstCorrection, find(cal.ParameterOn), 2, CATS.Theme.Success);
+                styleColumn(obj.H.InstCorrection, find(~cal.ParameterOn), 2, CATS.Theme.Warning);
 
             catch ME
 
-                obj.H.ReportStatus.Text = "Report failed: " + ME.message;
+                obj.H.InstCalset.Text = "Could not read: " + ME.message;
+                obj.H.InstCorrection.Data = cell(0,2);
+
+            end
+
+            obj.refresh();
+
+        end
+
+        function onInstrumentReconnect(obj)
+
+            if isempty(obj.Driver)
+                return
+            end
+
+            try
+                obj.Driver.reconnect();
+                obj.setStatus("VNA reconnected.");
+            catch ME
+                obj.alert(ME.message, 'Reconnect Failed');
+            end
+
+            obj.refreshInstrument();
+
+        end
+
+        function onEngineeringMode(obj)
+
+            if obj.H.EngMode.Value
+
+                choice = obj.confirm(['Engineering mode lets you change the VNA sweep by hand. ' ...
+                    'After a manual change, testing stays blocked until the profile sweep is ' ...
+                    're-pushed and the cal is verified.'], 'Engineering Mode', ...
+                    ["Enable","Cancel"], "Cancel");
+
+                if choice ~= "Enable"
+                    obj.H.EngMode.Value = false;
+                end
+
+            end
+
+            obj.H.InstSweep.ColumnEditable = [false logical(obj.H.EngMode.Value) false false];
+
+            obj.refresh();
+
+        end
+
+        function onEngineeringPush(obj)
+
+            if isempty(obj.Driver) || ~obj.H.EngMode.Value
+                return
+            end
+
+            v = cell2mat(obj.H.InstSweep.Data(:,2));
+
+            if numel(v) ~= 5 || any(~isfinite(v)) || v(1) >= v(2)
+                obj.alert('Enter valid values (start below stop).', 'Push to VNA');
+                return
+            end
+
+            obj.stopSweeping();
+
+            try
+
+                obj.Driver.pushStimulus(struct('StartFreq', v(1)*1e6, 'StopFreq', v(2)*1e6, ...
+                    'NumPoints', round(v(3)), 'IFBW', v(4)*1e3, 'Power', v(5)));
+
+                obj.CalVerified = false;
+                obj.CalVerifiedAt = NaT;
+
+                if ~isempty(obj.Batch)
+                    obj.setCalStatus(false, ['Sweep changed in Engineering mode. ' ...
+                        'Re-push the profile sweep and re-verify the cal before testing.']);
+                end
+
+            catch ME
+
+                obj.alert(ME.message, 'Push to VNA');
+
+            end
+
+            obj.refreshInstrument();
+
+        end
+
+        function onRepushProfile(obj)
+
+            obj.stopSweeping();
+
+            if obj.pushProfileSweep()
+                obj.verifyCal();
+            end
+
+            obj.refreshInstrument();
+
+        end
+
+        function onInstrumentVerify(obj)
+
+            obj.verifyCal();
+
+            obj.refreshInstrument();
+
+        end
+
+        function onReadErrors(obj)
+
+            if isempty(obj.Driver)
+                return
+            end
+
+            try
+
+                errors = obj.Driver.readErrorQueue();
+
+                if isempty(errors)
+                    obj.H.InstErrors.Items = {sprintf('No errors  (read %s)', ...
+                        string(datetime("now"), "HH:mm:ss"))};
+                else
+                    obj.H.InstErrors.Items = cellstr(errors);
+                end
+
+            catch ME
+
+                obj.H.InstErrors.Items = {char("Could not read errors: " + ME.message)};
 
             end
 
@@ -2479,6 +3234,19 @@ classdef App < handle
 
         end
 
+        function name = shortName(item)
+            % Review label: the serial if the metadata was found,
+            % otherwise the file name.
+
+            if ~isempty(item.Record)
+                name = item.Record.Serial;
+            else
+                name = extractBefore(item.Name + string(blanks(24)), 25);
+                name = strtrim(name);
+            end
+
+        end
+
         function text = formatValue(value, units)
 
             if ~isfinite(value)
@@ -2569,5 +3337,17 @@ if cond
 else
     out = b;
 end
+
+end
+
+function styleColumn(tbl, rows, col, color)
+% Colour cells (rows, col) of a uitable; black text for contrast.
+
+if isempty(rows)
+    return
+end
+
+addStyle(tbl, uistyle('BackgroundColor', color, 'FontColor', CATS.Theme.OnStatus), ...
+    'cell', [rows(:) repmat(col, numel(rows), 1)]);
 
 end

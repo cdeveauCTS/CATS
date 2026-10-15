@@ -2068,7 +2068,7 @@ classdef App < handle
 
                 for t = obj.traceList(p)'
                     lines(end+1) = plot(ax, NaN, NaN, 'LineWidth', 1.6, ...
-                        'LineStyle', t.Style, 'DisplayName', t.Name); %#ok<AGROW>
+                        'LineStyle', t.Style, 'Color', t.Color, 'DisplayName', t.Name); %#ok<AGROW>
                 end
 
                 hold(ax, 'off');
@@ -2101,22 +2101,26 @@ classdef App < handle
         end
 
         function traces = traceList(~, p)
-            % Transmission solid, reflection dashed.
+            % Transmission (Sn1) then reflection (Snn) for every port,
+            % each with its own colour and line style (CATS.Theme.trace).
 
             n = numel(p.Ports);
 
             names = p.PortNames;
 
-            traces = struct('Row', {}, 'Col', {}, 'Style', {}, 'Name', {});
+            traces = struct('Row', {}, 'Col', {}, 'Style', {}, 'Color', {}, 'Name', {});
 
-            for r = 2:n
-                traces(end+1) = struct('Row', r, 'Col', 1, 'Style', '-', ...
-                    'Name', sprintf('S%d1 %s', r, names(r))); %#ok<AGROW>
-            end
+            rc = [(2:n).' ones(n-1,1); (1:n).' (1:n).'];
 
-            for r = 1:n
-                traces(end+1) = struct('Row', r, 'Col', r, 'Style', '--', ...
-                    'Name', sprintf('S%d%d %s', r, r, names(r))); %#ok<AGROW>
+            for k = 1:size(rc,1)
+
+                param = sprintf('S%d%d', rc(k,1), rc(k,2));
+
+                [color, style] = CATS.Theme.trace(param);
+
+                traces(end+1) = struct('Row', rc(k,1), 'Col', rc(k,2), 'Style', style, ...
+                    'Color', color, 'Name', param + " " + names(rc(k,1))); %#ok<AGROW>
+
             end
 
             traces = traces(:);
@@ -2422,11 +2426,19 @@ classdef App < handle
 
             profile = obj.profileByName(string(obj.H.ReviewProfile.Value));
 
-            colors = colororder(obj.H.ReviewAxes);
+            % File colours: the trace palette plus purple, never the
+            % green / orange of the limit lines
+            palette = ["S21","S11","S31","S22","S33","other"];
+            colors = zeros(numel(palette), 3);
+            for j = 1:numel(palette)
+                colors(j,:) = CATS.Theme.trace(palette(j));
+            end
 
             %
-            % Traces: transmission solid, input reflection dashed, one
-            % colour per file
+            % Traces: transmission (Sn1) and every port's reflection
+            % (Snn), line style per parameter. One file: colour per
+            % parameter, as on the Test tab. Several files: colour per
+            % file, so the files can be told apart.
             %
             for a = 1:2
 
@@ -2438,16 +2450,26 @@ classdef App < handle
 
                     s = items(k).SParams;
                     f = s.Frequencies/1e6;
-                    c = colors(mod(k-1, size(colors,1)) + 1, :);
+                    n = min(3, s.NumPorts);
                     name = CATS.App.shortName(items(k));
 
-                    for r = 2:min(3, s.NumPorts)
-                        plot(ax, f, 20*log10(abs(squeeze(s.Parameters(r,1,:)))), '-', ...
-                            'Color', c, 'LineWidth', 1.4, 'DisplayName', sprintf('%s S%d1', name, r));
-                    end
+                    rc = [(2:n).' ones(n-1,1); (1:n).' (1:n).'];
 
-                    plot(ax, f, 20*log10(abs(squeeze(s.Parameters(1,1,:)))), '--', ...
-                        'Color', c, 'LineWidth', 1.1, 'DisplayName', name + " S11");
+                    for j = 1:size(rc,1)
+
+                        param = sprintf('S%d%d', rc(j,1), rc(j,2));
+
+                        [c, style] = CATS.Theme.trace(param);
+
+                        if numel(items) > 1
+                            c = colors(mod(k-1, size(colors,1)) + 1, :);
+                        end
+
+                        plot(ax, f, 20*log10(abs(squeeze(s.Parameters(rc(j,1), rc(j,2), :)))), ...
+                            'LineStyle', style, 'Color', c, 'LineWidth', 1.4, ...
+                            'DisplayName', name + " " + param);
+
+                    end
 
                 end
 

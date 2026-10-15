@@ -122,6 +122,32 @@ classdef Theme
 
         end
 
+        function [color, lineStyle] = trace(parameter)
+            % Colour and line style for an S-parameter trace, the same on
+            % every plot. Mid-brightness colours that read on light and
+            % dark axes and stay clear of the green / orange limit lines.
+            %
+            %   transmission solid:  S21 blue, S31 teal
+            %   reflection:          S11 magenta dashed, S22 red dotted,
+            %                        S33 grey dash-dot
+
+            switch upper(string(parameter))
+                case "S21"
+                    color = [30 120 220]/255;   lineStyle = '-';
+                case "S31"
+                    color = [0 165 165]/255;    lineStyle = '-';
+                case "S11"
+                    color = [200 60 200]/255;   lineStyle = '--';
+                case "S22"
+                    color = [225 40 60]/255;    lineStyle = ':';
+                case "S33"
+                    color = [140 140 140]/255;  lineStyle = '-.';
+                otherwise
+                    color = [120 100 200]/255;  lineStyle = '-';
+            end
+
+        end
+
         function color = passFail(tf)
             % Success colour for true, warning colour for false.
 

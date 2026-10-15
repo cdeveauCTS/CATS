@@ -132,6 +132,35 @@ verifyEqual(testCase, c{10,1}, 'Operator: jdoe');
 
 end
 
+function testReadLogsWithNoLogs(testCase)
+% A fresh data folder (no batch logs) must still give typed columns.
+
+log = CATS.Storage.readLogs(testCase.TestData.Temp);
+
+verifyEqual(testCase, height(log), 0);
+verifyClass(testCase, log.Decision, 'string');
+verifyEmpty(testCase, find(log.Decision == "PASS"));
+
+end
+
+function testReadLogsAfterSaving(testCase)
+
+p = testCase.TestData.Profile;
+
+batch = CATS.Storage.newBatch(testCase.TestData.Temp, p, "jdoe", "WO1");
+
+bad = simSweep(p, 5);
+CATS.Storage.saveRecord(batch, "1235-0001", bad, Specs.evaluate(bad, p), "FAIL");
+CATS.Storage.logSkip(batch, "1235-0002");
+
+log = CATS.Storage.readLogs(testCase.TestData.Temp);
+
+verifyEqual(testCase, log.Decision, ["SKIPPED"; "FAIL"]);    % newest first
+verifyEqual(testCase, log.Failed(2), "IL");
+verifyEqual(testCase, log.BatchId, [batch.Id; batch.Id]);
+
+end
+
 %==========================================================
 % HELPERS
 %==========================================================
@@ -146,6 +175,7 @@ cfg.NumPoints = p.Stimulus.Points;
 
 v = VNA.VNAFactory.create(cfg);
 v.AcquireDelaySec = 0;
+v.tuneToProfile(p);          % golden part for this profile
 v.SimLossdB = lossdB;
 v.connect();
 

@@ -1523,7 +1523,9 @@ classdef App < handle
             obj.H.InstSweep = uitable(s, 'FontSize', 15, 'RowName', {}, ...
                 'ColumnName', {'Setting','On VNA','Profile','Match'}, ...
                 'ColumnWidth', {'2x', '2x', '2x', '1x'}, 'Data', cell(0,4), ...
-                'ColumnEditable', [false false false false]);
+                'ColumnFormat', {'char','numeric','numeric','char'}, ...
+                'ColumnEditable', [false false false false], ...
+                'CellEditCallback', @(~,e) obj.onSweepCellEdited(e));
             obj.place(obj.H.InstSweep, 1, [1 3]);
 
             obj.H.EngMode = uicheckbox(s, 'Text', 'Engineering mode (edit and push sweep)', ...
@@ -2870,16 +2872,18 @@ classdef App < handle
                 return
             end
 
-            v = cell2mat(obj.H.InstSweep.Data(:,2));
-
-            if numel(v) ~= 5 || any(~isfinite(v)) || v(1) >= v(2)
-                obj.alert('Enter valid values (start below stop).', 'Push to VNA');
-                return
-            end
-
             obj.stopSweeping();
 
             try
+
+                % Edited cells can come back as text; accept either
+                v = cellfun(@(x) str2double(string(x)), obj.H.InstSweep.Data(:,2));
+
+                if numel(v) ~= 5 || any(~isfinite(v)) || v(1) >= v(2) || v(3) < 2 || v(4) <= 0
+                    obj.alert(['Enter numbers for every setting: start below stop, ' ...
+                        'at least 2 points, IF bandwidth above 0.'], 'Push to VNA');
+                    return
+                end
 
                 obj.Driver.pushStimulus(struct('StartFreq', v(1)*1e6, 'StopFreq', v(2)*1e6, ...
                     'NumPoints', round(v(3)), 'IFBW', v(4)*1e3, 'Power', v(5)));
@@ -2892,13 +2896,40 @@ classdef App < handle
                         'Re-push the profile sweep and re-verify the cal before testing.']);
                 end
 
+                s = obj.Driver.readInstrumentSettings();
+
+                obj.setStatus(sprintf(['Pushed to VNA. It now reads %.6g-%.6g MHz, %d points, ' ...
+                    'IFBW %g kHz, %g dBm.'], s.StartFreq/1e6, s.StopFreq/1e6, s.NumPoints, ...
+                    s.IFBW/1e3, s.Power));
+
             catch ME
 
-                obj.alert(ME.message, 'Push to VNA');
+                obj.alert(sprintf('The sweep could not be pushed:\n\n%s', ME.message), 'Push to VNA');
 
             end
 
+            CATS.Theme.style(obj.H.InstPush, "auto");
+            obj.H.InstPush.Text = 'Push to VNA';
+
             obj.refreshInstrument();
+
+        end
+
+        function onSweepCellEdited(obj, event)
+            % Engineering mode edit: show that there is something to push.
+
+            if isnan(str2double(string(event.NewData)))
+
+                obj.setStatus("Enter a number for " + string(obj.H.InstSweep.Data{event.Indices(1),1}) + ".");
+
+                return
+
+            end
+
+            CATS.Theme.style(obj.H.InstPush, "warning");
+            obj.H.InstPush.Text = 'Push to VNA (edited)';
+
+            obj.setStatus("Sweep edited. Press Push to VNA to send it.");
 
         end
 

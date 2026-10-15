@@ -165,7 +165,12 @@ classdef Storage
             names = {'Timestamp','Serial','Decision','Failed','Override', ...
                 'Retest','Operator','Profile','BatchId'};
 
-            log = cell2table(cell(0, numel(names)), 'VariableNames', names);
+            % Typed empty table, so callers can compare columns even
+            % when no logs exist yet
+            none = strings(0,1);
+
+            log = table(NaT(0,1), none, none, none, none, false(0,1), ...
+                none, none, none, 'VariableNames', names);
 
             parts = {};
 

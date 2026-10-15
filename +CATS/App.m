@@ -63,6 +63,12 @@ classdef App < handle
 
         ReviewItems struct = struct([])
 
+        %
+        % Engineering mode: test without error correction. Saved parts
+        % are marked UNCORRECTED. Cleared at batch end and on restart.
+        %
+        AllowUncorrected logical = false
+
     end
 
     properties
@@ -107,6 +113,12 @@ classdef App < handle
         % changed by hand to an already-tested part)
         %
         ResumeSerial string = ""
+
+        %
+        % Sweep last read from the VNA, in Engineering field units:
+        % [start MHz, stop MHz, points, IFBW kHz, power dBm]
+        %
+        EngVNAValues double = NaN(1,5)
 
     end
 
@@ -398,6 +410,9 @@ classdef App < handle
             obj.LastSweep = [];
             obj.LastResults = table();
 
+            % Uncorrected testing never carries into the next batch
+            obj.setAllowUncorrected(false);
+
             obj.setStatus("Batch finished.");
             obj.refresh();
 
@@ -485,6 +500,8 @@ classdef App < handle
                     'IFBW', p.Stimulus.IFBWHz, ...
                     'Power', p.Stimulus.PowerdBm));
 
+                obj.sweepVNAScreen();
+
                 ok = true;
 
             catch ME
@@ -494,6 +511,19 @@ classdef App < handle
             end
 
             obj.refresh();
+
+        end
+
+        function sweepVNAScreen(obj)
+            % The VNA is held between acquisitions (INIT:CONT OFF), so
+            % its screen still shows the old sweep after a push. One
+            % sweep redraws it with the new settings.
+
+            try
+                obj.Driver.triggerSweep();
+            catch ME
+                fprintf('CATS: sweep after push failed: %s\n', ME.message);
+            end
 
         end
 
@@ -533,9 +563,18 @@ classdef App < handle
 
                 cal = obj.Driver.getCalInfo();
 
-                if ~cal.CorrectionOn
+                missing = cal.Missing(:).';
 
-                    off = cal.Parameters(~cal.ParameterOn);
+                if ~isempty(missing)
+
+                    reasons(end+1) = strjoin(missing, ", ") + ...
+                        " not set up on the VNA. Press Set Up VNA + ECal.";
+
+                end
+
+                off = setdiff(cal.Parameters(~cal.ParameterOn), missing, 'stable');
+
+                if ~isempty(off) && ~obj.AllowUncorrected
 
                     reasons(end+1) = "Error correction is OFF for " + ...
                         strjoin(off, ", ") + ". Run ECal.";
@@ -556,7 +595,16 @@ classdef App < handle
 
             obj.CalVerifiedAt = NaT;
 
-            if ok
+            if ok && obj.AllowUncorrected
+
+                obj.CalVerifiedAt = datetime("now");
+
+                obj.setCalStatus(true, "UNCORRECTED TESTING  (sweep checked " + ...
+                    string(datetime("now"), "HH:mm") + "; results not error-corrected)");
+
+                obj.setStatus("UNCORRECTED: parts are saved and reported as uncorrected.");
+
+            elseif ok
 
                 obj.CalVerifiedAt = datetime("now");
 
@@ -762,6 +810,7 @@ classdef App < handle
             info = struct( ...
                 'Retest', retest, ...
                 'Override', override, ...
+                'Uncorrected', obj.AllowUncorrected, ...
                 'Software', "CATS " + CATS.App.Version, ...
                 'VNA', obj.VNAInfo, ...
                 'Calibration', obj.CalInfo);
@@ -1281,7 +1330,7 @@ classdef App < handle
                 'ButtonPushedFcn', @(~,~) obj.openFolder(obj.Settings.DataRoot));
 
             obj.H.Log = uitable(g, 'FontSize', 16, 'RowName', {}, ...
-                'ColumnName', {'Time','Serial','Result','Failed criteria','Override statement', ...
+                'ColumnName', {'Time','Serial','Result','Failed criteria','Notes', ...
                 'Retest','Operator','Part'}, ...
                 'ColumnWidth', {170, 170, 110, 220, '1x', 80, 140, 110}, ...
                 'Data', cell(0,8));
@@ -1516,25 +1565,60 @@ classdef App < handle
             p = uipanel(g, 'Title', 'Sweep', 'FontSize', CATS.Theme.FontLarge, ...
                 'FontWeight', 'bold');
 
-            s = uigridlayout(p, [2 3]);
-            s.RowHeight = {'1x', 42};
-            s.ColumnWidth = {'1x', 'fit', 170};
+            s = uigridlayout(p, [5 5]);
+            s.RowHeight = {'1x', 32, 24, 36, 42};
+            s.ColumnWidth = {'1x', '1x', '1x', '1x', '1x'};
+            s.RowSpacing = 6;
 
             obj.H.InstSweep = uitable(s, 'FontSize', 15, 'RowName', {}, ...
                 'ColumnName', {'Setting','On VNA','Profile','Match'}, ...
-                'ColumnWidth', {'2x', '2x', '2x', '1x'}, 'Data', cell(0,4), ...
-                'ColumnFormat', {'char','numeric','numeric','char'}, ...
-                'ColumnEditable', [false false false false], ...
-                'CellEditCallback', @(~,e) obj.onSweepCellEdited(e));
-            obj.place(obj.H.InstSweep, 1, [1 3]);
+                'ColumnWidth', {'2x', '2x', '2x', '1x'}, 'Data', cell(0,4));
+            obj.place(obj.H.InstSweep, 1, [1 5]);
 
-            obj.H.EngMode = uicheckbox(s, 'Text', 'Engineering mode (edit and push sweep)', ...
-                'FontSize', CATS.Theme.FontBase, 'ValueChangedFcn', @(~,~) obj.onEngineeringMode());
+            %
+            % Engineering mode: type a sweep and push it
+            %
+            obj.H.EngMode = uicheckbox(s, 'Text', 'Engineering mode', ...
+                'FontSize', CATS.Theme.FontBase, 'FontWeight', 'bold', ...
+                'ValueChangedFcn', @(~,~) obj.onEngineeringMode());
             obj.place(obj.H.EngMode, 2, [1 2]);
+
+            obj.H.AllowUncorrected = uicheckbox(s, 'Text', 'Allow uncorrected testing', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'Tooltip', 'Test without error correction. Saved parts are marked UNCORRECTED.', ...
+                'ValueChangedFcn', @(~,~) obj.onAllowUncorrected());
+            obj.place(obj.H.AllowUncorrected, 2, [3 5]);
+
+            fields = ["EngStart","EngStop","EngPoints","EngIFBW","EngPower"];
+            titles = ["Start (MHz)","Stop (MHz)","Points","IFBW (kHz)","Power (dBm)"];
+            formats = ["%.6g","%.6g","%d","%.6g","%.4g"];
+
+            for k = 1:5
+
+                lbl = uilabel(s, 'Text', titles(k), 'FontSize', 13);
+                obj.place(lbl, 3, k);
+
+                obj.H.(fields(k)) = uieditfield(s, 'numeric', ...
+                    'FontSize', CATS.Theme.FontBase, 'ValueDisplayFormat', char(formats(k)), ...
+                    'AllowEmpty', 'on', 'Value', [], ...
+                    'ValueChangedFcn', @(~,~) obj.onEngFieldChanged());
+                obj.place(obj.H.(fields(k)), 4, k);
+
+            end
+
+            obj.H.EngUseProfile = uibutton(s, 'Text', 'Use Profile Values', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.onEngUseProfile());
+            obj.place(obj.H.EngUseProfile, 5, [1 2]);
+
+            obj.H.EngUseVNA = uibutton(s, 'Text', 'Use VNA Values', ...
+                'FontSize', CATS.Theme.FontBase, ...
+                'ButtonPushedFcn', @(~,~) obj.refreshInstrument(true));
+            obj.place(obj.H.EngUseVNA, 5, [3 4]);
 
             obj.H.InstPush = uibutton(s, 'Text', 'Push to VNA', 'FontSize', CATS.Theme.FontBase, ...
                 'Enable', 'off', 'ButtonPushedFcn', @(~,~) obj.onEngineeringPush());
-            obj.place(obj.H.InstPush, 2, 3);
+            obj.place(obj.H.InstPush, 5, 5);
 
             %
             % Calibration
@@ -1707,6 +1791,10 @@ classdef App < handle
                 obj.H.Guide.Text = sprintf('Connect %s and press Start.', obj.Serial);
             end
 
+            if batch && obj.AllowUncorrected
+                obj.H.Guide.Text = "UNCORRECTED TESTING.  " + string(obj.H.Guide.Text);
+            end
+
             %
             % Override statement(s) in use for this batch
             %
@@ -1758,7 +1846,15 @@ classdef App < handle
 
             obj.H.InstFind.Enable = ~obj.Sweeping;
             obj.H.EngMode.Enable = idle;
-            obj.H.InstPush.Enable = idle && logical(obj.H.EngMode.Value);
+
+            eng = idle && logical(obj.H.EngMode.Value);
+
+            for f = ["EngStart","EngStop","EngPoints","EngIFBW","EngPower", ...
+                    "EngUseProfile","EngUseVNA","InstPush","AllowUncorrected"]
+                obj.H.(f).Enable = eng;
+            end
+
+            obj.H.AllowUncorrected.Value = obj.AllowUncorrected;
             obj.H.InstRepush.Enable = idle && batch;
             obj.H.InstVerifyCal.Enable = idle && batch;
 
@@ -1909,13 +2005,22 @@ classdef App < handle
 
         function setCalStatus(obj, ok, text)
 
-            if ok
+            if ok && ~obj.AllowUncorrected
                 CATS.Theme.style(obj.H.CalLamp, "success");
             else
                 CATS.Theme.style(obj.H.CalLamp, "warning");
             end
 
             obj.H.CalLabel.Text = text;
+
+            % Uncorrected testing: bold orange so nobody misses it
+            if obj.AllowUncorrected
+                obj.H.CalLabel.FontWeight = 'bold';
+                obj.H.CalLabel.FontColor = CATS.Theme.Warning;
+            else
+                obj.H.CalLabel.FontWeight = 'normal';
+                obj.H.CalLabel.FontColorMode = 'auto';   % follow the theme
+            end
 
         end
 
@@ -2167,13 +2272,7 @@ classdef App < handle
                 data{k,3} = char(log.Decision(k));
                 data{k,4} = char(log.Failed(k));
 
-                note = log.Override(k);
-
-                if strlength(note) > 0
-                    note = "Override " + note;
-                end
-
-                data{k,5} = char(note);
+                data{k,5} = char(log.Notes(k));
                 data{k,6} = char(ifelse(log.Retest(k), "retest", ""));
                 data{k,7} = char(log.Operator(k));
                 data{k,8} = char(log.Profile(k));
@@ -2600,7 +2699,9 @@ classdef App < handle
                 data{k,2} = char(string(r.Timestamp, "yyyy-MM-dd HH:mm"));
                 data{k,3} = char(r.Operator);
                 data{k,4} = char(r.Decision);
-                if strlength(r.Override) > 0
+                if strlength(r.Notes) > 0
+                    data{k,5} = char(r.Notes);
+                elseif strlength(r.Override) > 0
                     data{k,5} = char("Override " + r.Override);
                 else
                     data{k,5} = '';
@@ -2701,8 +2802,14 @@ classdef App < handle
         %==========================================================
         % INSTRUMENT
         %==========================================================
-        function refreshInstrument(obj)
+        function refreshInstrument(obj, syncFields)
             % Read the VNA and show it next to what the profile expects.
+            % The Engineering fields follow the VNA unless Engineering
+            % mode is on (then only when syncFields is true).
+
+            if nargin < 2
+                syncFields = false;
+            end
 
             if isempty(obj.Figure) || ~isvalid(obj.Figure)
                 return
@@ -2718,6 +2825,8 @@ classdef App < handle
 
                 obj.H.InstSweep.Data = cell(0,4);
                 obj.H.InstCorrection.Data = cell(0,2);
+                obj.EngVNAValues = NaN(1,5);
+                obj.setEngFields(NaN(5,1));
                 obj.refresh();
 
                 return
@@ -2733,6 +2842,15 @@ classdef App < handle
                 obj.H.InstVerified.Text = 'Not verified';
             else
                 obj.H.InstVerified.Text = string(obj.CalVerifiedAt, "yyyy-MM-dd HH:mm:ss");
+            end
+
+            if obj.AllowUncorrected
+                obj.H.InstVerified.Text = obj.H.InstVerified.Text + "   UNCORRECTED TESTING";
+                obj.H.InstVerified.FontColor = CATS.Theme.Warning;
+                obj.H.InstVerified.FontWeight = 'bold';
+            else
+                obj.H.InstVerified.FontColorMode = 'auto';
+                obj.H.InstVerified.FontWeight = 'normal';
             end
 
             if obj.Sweeping
@@ -2783,6 +2901,15 @@ classdef App < handle
             end
 
             obj.H.InstSweep.Data = data;
+
+            obj.EngVNAValues = vna.';
+
+            if syncFields || ~obj.H.EngMode.Value
+                obj.setEngFields(vna);
+            end
+
+            obj.onEngFieldChanged();
+
             removeStyle(obj.H.InstSweep);
             styleColumn(obj.H.InstSweep, find(match), 4, CATS.Theme.Success);
             styleColumn(obj.H.InstSweep, find(~match & ~isnan(ref)), 4, CATS.Theme.Warning);
@@ -2807,9 +2934,14 @@ classdef App < handle
 
                 rows = numel(cal.Parameters);
                 cd = cell(rows, 2);
+                missing = ismember(cal.Parameters, cal.Missing);
                 for k = 1:rows
                     cd{k,1} = char(cal.Parameters(k));
-                    cd{k,2} = char(ifelse(cal.ParameterOn(k), "ON", "OFF"));
+                    if missing(k)
+                        cd{k,2} = 'Not set up on the VNA - press Set Up VNA + ECal';
+                    else
+                        cd{k,2} = char(ifelse(cal.ParameterOn(k), "ON", "OFF"));
+                    end
                 end
 
                 obj.H.InstCorrection.Data = cd;
@@ -2849,8 +2981,8 @@ classdef App < handle
 
             if obj.H.EngMode.Value
 
-                choice = obj.confirm(['Engineering mode lets you change the VNA sweep by hand. ' ...
-                    'After a manual change, testing stays blocked until the profile sweep is ' ...
+                choice = obj.confirm(['Engineering mode lets you type a VNA sweep and push it. ' ...
+                    'After a manual push, testing stays blocked until the profile sweep is ' ...
                     're-pushed and the cal is verified.'], 'Engineering Mode', ...
                     ["Enable","Cancel"], "Cancel");
 
@@ -2858,11 +2990,19 @@ classdef App < handle
                     obj.H.EngMode.Value = false;
                 end
 
+            elseif obj.AllowUncorrected
+
+                % Uncorrected testing lives inside Engineering mode
+                obj.setAllowUncorrected(false);
+
             end
 
-            obj.H.InstSweep.ColumnEditable = [false logical(obj.H.EngMode.Value) false false];
-
             obj.refresh();
+
+            % Start from what the VNA is doing now
+            if obj.H.EngMode.Value
+                obj.refreshInstrument(true);
+            end
 
         end
 
@@ -2872,21 +3012,22 @@ classdef App < handle
                 return
             end
 
+            v = obj.engFieldValues();
+
+            if any(~isfinite(v)) || v(1) >= v(2) || v(3) < 2 || v(4) <= 0
+                obj.alert(['Enter every setting: start below stop, ' ...
+                    'at least 2 points, IF bandwidth above 0.'], 'Push to VNA');
+                return
+            end
+
             obj.stopSweeping();
 
             try
 
-                % Edited cells can come back as text; accept either
-                v = cellfun(@(x) str2double(string(x)), obj.H.InstSweep.Data(:,2));
-
-                if numel(v) ~= 5 || any(~isfinite(v)) || v(1) >= v(2) || v(3) < 2 || v(4) <= 0
-                    obj.alert(['Enter numbers for every setting: start below stop, ' ...
-                        'at least 2 points, IF bandwidth above 0.'], 'Push to VNA');
-                    return
-                end
-
                 obj.Driver.pushStimulus(struct('StartFreq', v(1)*1e6, 'StopFreq', v(2)*1e6, ...
                     'NumPoints', round(v(3)), 'IFBW', v(4)*1e3, 'Power', v(5)));
+
+                obj.sweepVNAScreen();
 
                 obj.CalVerified = false;
                 obj.CalVerifiedAt = NaT;
@@ -2908,28 +3049,126 @@ classdef App < handle
 
             end
 
-            CATS.Theme.style(obj.H.InstPush, "auto");
-            obj.H.InstPush.Text = 'Push to VNA';
-
-            obj.refreshInstrument();
+            % Show what the VNA actually accepted (it may round values)
+            obj.refreshInstrument(true);
 
         end
 
-        function onSweepCellEdited(obj, event)
-            % Engineering mode edit: show that there is something to push.
+        function onEngUseProfile(obj)
 
-            if isnan(str2double(string(event.NewData)))
+            if ~isempty(obj.Batch)
+                profile = obj.Batch.Profile;
+            else
+                profile = obj.selectedProfile();
+            end
 
-                obj.setStatus("Enter a number for " + string(obj.H.InstSweep.Data{event.Indices(1),1}) + ".");
-
+            if isempty(profile)
                 return
+            end
+
+            st = profile.Stimulus;
+
+            obj.setEngFields([st.StartHz/1e6; st.StopHz/1e6; st.Points; ...
+                st.IFBWHz/1e3; st.PowerdBm]);
+
+            obj.onEngFieldChanged();
+
+        end
+
+        function onEngFieldChanged(obj)
+            % Push turns orange while the fields differ from the VNA.
+
+            v = obj.engFieldValues();
+
+            vna = obj.EngVNAValues;
+
+            same = abs(v - vna) <= 1e-6*max(1, abs(vna));
+
+            if all(same) || all(isnan(vna))
+                CATS.Theme.style(obj.H.InstPush, "auto");
+                obj.H.InstPush.Text = 'Push to VNA';
+            else
+                CATS.Theme.style(obj.H.InstPush, "warning");
+                obj.H.InstPush.Text = 'Push to VNA (changed)';
+            end
+
+        end
+
+        function onAllowUncorrected(obj)
+
+            if obj.H.AllowUncorrected.Value
+
+                choice = obj.confirm(['Uncorrected testing skips the error-correction check. ' ...
+                    'Every part tested is saved, logged and reported as UNCORRECTED. ' ...
+                    'It turns off at the end of the batch.'], 'Uncorrected Testing', ...
+                    ["Allow Uncorrected","Cancel"], "Cancel");
+
+                if choice ~= "Allow Uncorrected"
+                    obj.H.AllowUncorrected.Value = false;
+                    return
+                end
 
             end
 
-            CATS.Theme.style(obj.H.InstPush, "warning");
-            obj.H.InstPush.Text = 'Push to VNA (edited)';
+            obj.setAllowUncorrected(logical(obj.H.AllowUncorrected.Value));
 
-            obj.setStatus("Sweep edited. Press Push to VNA to send it.");
+        end
+
+        function setAllowUncorrected(obj, tf)
+            % Change uncorrected testing; with a batch running, the cal
+            % is checked again under the new rule.
+
+            if obj.AllowUncorrected == tf
+                return
+            end
+
+            obj.AllowUncorrected = tf;
+
+            if ~isempty(obj.Figure) && isvalid(obj.Figure)
+                obj.H.AllowUncorrected.Value = tf;
+            end
+
+            if ~isempty(obj.Batch) && ~isempty(obj.Driver)
+
+                obj.stopSweeping();
+                obj.verifyCal();
+
+            elseif ~isempty(obj.Figure) && isvalid(obj.Figure)
+
+                % Restyle the cal label; refresh sets its text
+                obj.setCalStatus(false, obj.H.CalLabel.Text);
+                obj.refresh();
+
+            end
+
+        end
+
+        function v = engFieldValues(obj)
+
+            v = NaN(1,5);
+
+            fields = ["EngStart","EngStop","EngPoints","EngIFBW","EngPower"];
+
+            for k = 1:5
+                value = obj.H.(fields(k)).Value;
+                if ~isempty(value)
+                    v(k) = value;
+                end
+            end
+
+        end
+
+        function setEngFields(obj, v)
+
+            fields = ["EngStart","EngStop","EngPoints","EngIFBW","EngPower"];
+
+            for k = 1:5
+                if isfinite(v(k))
+                    obj.H.(fields(k)).Value = v(k);
+                else
+                    obj.H.(fields(k)).Value = [];
+                end
+            end
 
         end
 

@@ -49,7 +49,9 @@ classdef Storage
             %
             % info (struct, optional fields):
             %   Retest, VNA (Model/IDN/Resource), Calibration, Software,
-            %   Override (e.g. "HSR: fixture coupling..."; PASS only)
+            %   Override (e.g. "HSR: fixture coupling..."; PASS only),
+            %   Uncorrected (true when tested without error correction,
+            %   engineering mode)
 
             arguments
                 batch struct
@@ -97,6 +99,8 @@ classdef Storage
                 'ComputedPass', all(results.Pass), ...
                 'Retest', getOr(info, 'Retest', false), ...
                 'Override', string(getOr(info, 'Override', "")), ...
+                'Uncorrected', logical(getOr(info, 'Uncorrected', false)), ...
+                'Notes', "", ...
                 'Operator', batch.Operator, ...
                 'WorkOrder', batch.WorkOrder, ...
                 'BatchId', batch.Id, ...
@@ -104,6 +108,8 @@ classdef Storage
                 'Results', results, ...
                 'SweepFile', string(sweepFile), ...
                 'MetaFile', string(metaFile));
+
+            record.Notes = CATS.Storage.notesText(record.Uncorrected, record.Override);
 
             meta = struct();
 
@@ -119,6 +125,8 @@ classdef Storage
                 'Decision', record.Decision, ...
                 'ComputedPass', record.ComputedPass, ...
                 'Override', record.Override, ...
+                'Uncorrected', record.Uncorrected, ...
+                'Notes', record.Notes, ...
                 'Software', string(getOr(info, 'Software', "CATS")));
 
             meta.Results = CATS.Storage.resultsToStruct(results);
@@ -136,14 +144,31 @@ classdef Storage
 
             CATS.Storage.appendLog(batch, record.Serial, record.Decision, ...
                 record.ComputedPass, record.Retest, record.SweepFile, now_, ...
-                record.Override, strjoin(results.Id(~results.Pass), ","));
+                record.Override, strjoin(results.Id(~results.Pass), ","), record.Notes);
+
+        end
+
+        function text = notesText(uncorrected, override)
+            % Report / log note: "UNCORRECTED; Override HSR: ..."
+
+            parts = strings(0,1);
+
+            if uncorrected
+                parts(end+1) = "UNCORRECTED";
+            end
+
+            if strlength(override) > 0
+                parts(end+1) = "Override " + override;
+            end
+
+            text = strjoin(parts, "; ");
 
         end
 
         function logSkip(batch, serial)
 
             CATS.Storage.appendLog(batch, string(serial), "SKIPPED", ...
-                false, false, "", datetime("now"), "", "");
+                false, false, "", datetime("now"), "", "", "");
 
         end
 
@@ -163,14 +188,14 @@ classdef Storage
             end
 
             names = {'Timestamp','Serial','Decision','Failed','Override', ...
-                'Retest','Operator','Profile','BatchId'};
+                'Retest','Operator','Profile','BatchId','Notes'};
 
             % Typed empty table, so callers can compare columns even
             % when no logs exist yet
             none = strings(0,1);
 
             log = table(NaT(0,1), none, none, none, none, false(0,1), ...
-                none, none, none, 'VariableNames', names);
+                none, none, none, none, 'VariableNames', names);
 
             parts = {};
 
@@ -192,14 +217,16 @@ classdef Storage
                     end
 
                     % Columns added in later versions
-                    for opt = ["Override","Failed"]
+                    for opt = ["Override","Failed","Notes"]
                         if ~ismember(opt, t.Properties.VariableNames)
                             t.(opt) = strings(height(t), 1);
                         end
+                        t.(opt) = fillmissing(string(t.(opt)), 'constant', "");
                     end
 
-                    t.Override = fillmissing(string(t.Override), 'constant', "");
-                    t.Failed = fillmissing(string(t.Failed), 'constant', "");
+                    % Older logs: notes come from the override alone
+                    noNotes = strlength(t.Notes) == 0 & strlength(t.Override) > 0;
+                    t.Notes(noNotes) = "Override " + t.Override(noNotes);
 
                     id = extractBetween(string(f.name), "Batch_", ".csv");
 
@@ -212,7 +239,7 @@ classdef Storage
                         when, ...
                         string(t.Serial), string(t.Decision), t.Failed, t.Override, ...
                         logical(t.Retest), string(t.Operator), string(t.Profile), ...
-                        repmat(id, height(t), 1), 'VariableNames', names); %#ok<AGROW>
+                        repmat(id, height(t), 1), t.Notes, 'VariableNames', names); %#ok<AGROW>
 
                 end
 
@@ -323,6 +350,8 @@ classdef Storage
                 'Decision', string(meta.Test.Decision), ...
                 'ComputedPass', logical(meta.Test.ComputedPass), ...
                 'Override', fieldOr(meta, ["Test","Override"]), ...
+                'Uncorrected', fieldOr(meta, ["Test","Uncorrected"]) == "true", ...
+                'Notes', fieldOr(meta, ["Test","Notes"]), ...
                 'Retest', logical(meta.Part.Retest), ...
                 'Operator', string(meta.Batch.Operator), ...
                 'WorkOrder', string(meta.Batch.WorkOrder), ...
@@ -396,7 +425,7 @@ classdef Storage
 
     methods (Static, Access = private)
 
-        function appendLog(batch, serial, decision, computedPass, retest, sweepFile, when, override, failed)
+        function appendLog(batch, serial, decision, computedPass, retest, sweepFile, when, override, failed, notes)
 
             CATS.Storage.ensureFolder(fileparts(batch.LogFile));
 
@@ -413,13 +442,14 @@ classdef Storage
 
             if isNew
                 fprintf(fid, ['Timestamp,Serial,Decision,ComputedPass,Retest,' ...
-                    'Operator,WorkOrder,Profile,SweepFile,Override,Failed\n']);
+                    'Operator,WorkOrder,Profile,SweepFile,Override,Failed,Notes\n']);
             end
 
-            fprintf(fid, '%s,%s,%s,%d,%d,%s,%s,%s,"%s","%s","%s"\n', ...
+            fprintf(fid, '%s,%s,%s,%d,%d,%s,%s,%s,"%s","%s","%s","%s"\n', ...
                 string(when, "yyyy-MM-dd HH:mm:ss"), serial, decision, ...
                 computedPass, retest, batch.Operator, batch.WorkOrder, ...
-                batch.Profile.Name, sweepFile, strrep(override, '"', ''''), failed);
+                batch.Profile.Name, sweepFile, strrep(override, '"', ''''), failed, ...
+                strrep(notes, '"', ''''));
 
         end
 

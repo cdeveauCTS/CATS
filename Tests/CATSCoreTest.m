@@ -161,6 +161,43 @@ verifyEqual(testCase, log.BatchId, [batch.Id; batch.Id]);
 
 end
 
+function testUncorrectedAndOverrideNotes(testCase)
+% Uncorrected / override parts carry a note through the log, the
+% metadata and the report NOTES column.
+
+p = testCase.TestData.Profile;
+
+root = testCase.TestData.Temp;
+
+batch = CATS.Storage.newBatch(root, p, "jdoe", "WO1");
+
+good = simSweep(p, 1);
+res = Specs.evaluate(good, p);
+
+r1 = CATS.Storage.saveRecord(batch, "1235-0001", good, res, "PASS");
+r2 = CATS.Storage.saveRecord(batch, "1235-0002", good, res, "PASS", ...
+    struct('Uncorrected', true, 'Override', "HSR: fixture"));
+
+verifyEqual(testCase, r1.Notes, "");
+verifyTrue(testCase, r2.Uncorrected);
+verifyEqual(testCase, r2.Notes, "UNCORRECTED; Override HSR: fixture");
+
+log = CATS.Storage.readLogs(root);
+verifyEqual(testCase, log.Notes, ["UNCORRECTED; Override HSR: fixture"; ""]);
+
+back = CATS.Storage.readRecord(r2.MetaFile);
+verifyTrue(testCase, back.Uncorrected);
+verifyEqual(testCase, back.Notes, r2.Notes);
+verifyFalse(testCase, CATS.Storage.readRecord(r1.MetaFile).Uncorrected);
+
+recs = CATS.Storage.readRecords(root, BatchId=batch.Id);
+cells = Specs.writeReport(recs, p, batch.ReportFile);
+notesCol = find(strcmp(cells(12,:), 'NOTES'));
+verifyNotEmpty(testCase, notesCol);
+verifyEqual(testCase, cells{16, notesCol}, 'UNCORRECTED; Override HSR: fixture');
+
+end
+
 %==========================================================
 % HELPERS
 %==========================================================

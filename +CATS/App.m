@@ -2091,7 +2091,13 @@ classdef App < handle
             xlim(obj.H.NarrowAxes, narrowX/1e6);
             ylim(obj.H.NarrowAxes, narrowY);
 
-            legend(obj.H.Axes, 'Location', 'southwest', 'FontSize', 11);
+            % Clicking a legend entry hides / shows that trace on both plots
+            for k = 1:numel(obj.WideLines)
+                obj.WideLines(k).UserData = obj.NarrowLines(k);
+            end
+
+            legend(obj.H.Axes, 'Location', 'southwest', 'FontSize', 11, ...
+                'ItemHitFcn', @(~,e) CATS.App.toggleTrace(e));
 
             title(obj.H.Axes, p.Name + "  " + p.Description + "   (full sweep)", 'FontSize', 13);
             title(obj.H.NarrowAxes, "Passband", 'FontSize', 13);
@@ -2408,6 +2414,10 @@ classdef App < handle
                 cla(ax);
                 delete(findall(ax, 'Tag', 'SpecOverlay'));   % hidden; cla skips them
                 legend(ax, 'off');
+                % rfplot keeps its lines here; stale handles break the next rfplot
+                if isappdata(ax, 'RFNetParamInfo')
+                    rmappdata(ax, 'RFNetParamInfo');
+                end
             end
 
             obj.H.ReviewCriteria.Data = cell(0,2);
@@ -2435,50 +2445,64 @@ classdef App < handle
             end
 
             %
-            % Traces: transmission (Sn1) and every port's reflection
-            % (Snn), line style per parameter. One file: colour per
-            % parameter, as on the Test tab. Several files: colour per
-            % file, so the files can be told apart.
+            % Traces (rfplot): transmission (Sn1) and every port's
+            % reflection (Snn), line style per parameter. One file:
+            % colour per parameter, as on the Test tab. Several files:
+            % colour per file, so the files can be told apart. Each
+            % passband line is linked to its full-sweep line so the
+            % legend toggles both.
             %
-            for a = 1:2
+            scale = 1e6;
 
-                ax = axesList(a);
+            % rfplot rebuilds its own legend on every call and warns; the
+            % legend is replaced below
+            warnState = warning('off', 'MATLAB:legend:IgnoringExtraEntries');
+            restoreWarn = onCleanup(@() warning(warnState));
 
-                hold(ax, 'on');
+            hold(axesList(1), 'on');
+            hold(axesList(2), 'on');
 
-                for k = 1:numel(items)
+            for k = 1:numel(items)
 
-                    s = items(k).SParams;
-                    f = s.Frequencies/1e6;
-                    n = min(3, s.NumPorts);
-                    name = CATS.App.shortName(items(k));
+                s = items(k).SParams;
+                n = min(3, s.NumPorts);
+                name = CATS.App.shortName(items(k));
 
-                    rc = [(2:n).' ones(n-1,1); (1:n).' (1:n).'];
+                rc = [(2:n).' ones(n-1,1); (1:n).' (1:n).'];
 
-                    for j = 1:size(rc,1)
+                for j = 1:size(rc,1)
 
-                        param = sprintf('S%d%d', rc(j,1), rc(j,2));
+                    param = sprintf('S%d%d', rc(j,1), rc(j,2));
 
-                        [c, style] = CATS.Theme.trace(param);
+                    [c, style] = CATS.Theme.trace(param);
 
-                        if numel(items) > 1
-                            c = colors(mod(k-1, size(colors,1)) + 1, :);
-                        end
-
-                        plot(ax, f, 20*log10(abs(squeeze(s.Parameters(rc(j,1), rc(j,2), :)))), ...
-                            'LineStyle', style, 'Color', c, 'LineWidth', 1.4, ...
-                            'DisplayName', name + " " + param);
-
+                    if numel(items) > 1
+                        c = colors(mod(k-1, size(colors,1)) + 1, :);
                     end
+
+                    wide = rfplot(axesList(1), s, rc(j,1), rc(j,2));
+                    narrow = rfplot(axesList(2), s, rc(j,1), rc(j,2));
+
+                    set([wide narrow], 'LineStyle', style, 'Color', c, 'LineWidth', 1.4, ...
+                        'DisplayName', name + " " + param);
+
+                    wide.UserData = narrow;
+
+                    % rfplot picks the frequency unit (MHz / GHz)
+                    scale = s.Frequencies(end) / wide.XData(end);
 
                 end
 
-                hold(ax, 'off');
-                grid(ax, 'on');
-
             end
 
-            legend(obj.H.ReviewAxes, 'Location', 'southwest', 'Interpreter', 'none', 'FontSize', 10);
+            for ax = axesList
+                hold(ax, 'off');
+                grid(ax, 'on');
+            end
+
+            legend(axesList(2), 'off');
+            legend(obj.H.ReviewAxes, 'Location', 'southwest', 'Interpreter', 'none', 'FontSize', 10, ...
+                'ItemHitFcn', @(~,e) CATS.App.toggleTrace(e));
 
             first = items(1).SParams;
 
@@ -2491,9 +2515,9 @@ classdef App < handle
                 narrowY = [-40 2];
             end
 
-            xlim(obj.H.ReviewAxes, wideX/1e6);
+            xlim(obj.H.ReviewAxes, wideX/scale);
             ylim(obj.H.ReviewAxes, wideY);
-            xlim(obj.H.ReviewNarrowAxes, narrowX/1e6);
+            xlim(obj.H.ReviewNarrowAxes, narrowX/scale);
             ylim(obj.H.ReviewNarrowAxes, narrowY);
 
             title(obj.H.ReviewAxes, 'Full sweep', 'FontSize', 13);
@@ -2541,7 +2565,7 @@ classdef App < handle
                 end
 
                 if k == 1
-                    obj.drawReviewOverlays(r);
+                    obj.drawReviewOverlays(r, scale);
                 end
 
                 verdict = ifelse(all(r.Pass), "all pass", strjoin(r.Id(~r.Pass), ", ") + " fail");
@@ -2576,10 +2600,10 @@ classdef App < handle
 
         end
 
-        function drawReviewOverlays(obj, results)
+        function drawReviewOverlays(obj, results, scale)
 
             for ax = [obj.H.ReviewAxes, obj.H.ReviewNarrowAxes]
-                Specs.drawSpecOverlays(ax, results, ...
+                Specs.drawSpecOverlays(ax, results, FreqScale = scale, ...
                     PassColor = CATS.Theme.Success, FailColor = CATS.Theme.Warning);
             end
 
@@ -3519,6 +3543,24 @@ classdef App < handle
     end
 
     methods (Static)
+
+        function toggleTrace(event)
+            % Legend click: hide / show the trace, and its passband twin
+            % (stored in UserData). Hidden traces are greyed in the legend.
+
+            line = event.Peer;
+
+            state = ifelse(line.Visible == "on", "off", "on");
+
+            line.Visible = state;
+
+            twin = line.UserData;
+
+            if ~isempty(twin) && isgraphics(twin)
+                twin.Visible = state;
+            end
+
+        end
 
         function folder = appFolder()
             % Folder holding CATSApp.m, common/ and the logo (also

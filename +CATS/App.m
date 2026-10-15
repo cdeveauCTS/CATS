@@ -2060,6 +2060,7 @@ classdef App < handle
                 ax = axesList(a);
 
                 cla(ax);
+                delete(findall(ax, 'Tag', 'SpecOverlay'));   % hidden; cla skips them
 
                 hold(ax, 'on');
 
@@ -2401,6 +2402,7 @@ classdef App < handle
 
             for ax = axesList
                 cla(ax);
+                delete(findall(ax, 'Tag', 'SpecOverlay'));   % hidden; cla skips them
                 legend(ax, 'off');
             end
 

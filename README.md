@@ -62,7 +62,10 @@ selected profile, so the whole workflow can be exercised without hardware.
 
 ## Hardware
 
-Production VNA: iTest (Itenest) VNA-485E, 8.5 GHz, 4-port, with ECK09 ECal. Its driver
-needs the VNA-485E SCPI programming manual (not published; request from the
-vendor). Until then CATS runs with the simulated VNA or the Keysight N5230A.
-Vendor documents live in `docs/` (not in git).
+Production VNA: iTest (Itenest) VNA-485E, 8.5 GHz, 4-port, with ECK09 ECal. Driver
+`common/+VNA/+Drivers/VNA_485E.m` (Keysight ENA E5071C-style SCPI) is written but not
+yet tested on the instrument. Also supported: Keysight N5230A (lab stand-in) and the
+simulated VNA. Vendor documents live in `docs/` (not in git).
+
+Development status, decisions and the hardware bring-up checklist:
+[DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md).

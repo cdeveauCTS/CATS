@@ -156,6 +156,7 @@ case-insensitive).
 | `SIM` | Done | Hidden unless Settings → "List the simulated VNA". `tuneToProfile` makes a golden part. |
 | `N5230A` | Done, tested | PNA-L A.06.04.32 at `TCPIP0::192.168.1.200::5025::SOCKET`. See the quirks below. |
 | `VNA485E` | **Written, untested** | iTest VNA-485E. Uses Keysight ENA E5071C-style SCPI. |
+| `HP8753ES` | **Written, untested** | HP/Agilent 8753ES over GPIB with HP-IB mnemonics (`OUTPIDEN`, `OPC?;SING;`, `FORM4;OUTPDATA`). 2 ports, at most 1601 points, IF bandwidths 10 Hz to 6 kHz, 3 GHz (6 GHz with option 006). **Narrowband only:** a profile gets an 8753ES sweep through `StimulusByModel`. Start Batch refuses profiles the analyzer can't cover (`Specs.checkCoverage`), which today means all of 1233-1236 (low-side rejection to 20 MHz, harmonics). Three are still on the floor while they're being replaced. The driver header lists what to verify. |
 
 **N5230A quirks:**
 - `inst0` fails; use the raw socket.

@@ -117,6 +117,16 @@ The PC needs:
   - Assumed port mapping: 1 = Common, 2 = Low band, 3 = High band.
   - The pass direction of each limit was inferred from its label and sign.
   - Worth confirming against a real spec sheet.
+- **Colour-blind safe (WCAG 1.4.1)**: CTS green and orange look the same with
+  deuteranopia (checked in MATLAB and in Python with `colorspacious`/`daltonlens`),
+  so pass/fail never relies on colour alone:
+  - Failing limits are thick lines with ✗ end caps (a large cross for single-point
+    limits) and a "✗ <Id>" tag beside the line. Passing limits are thin and plain.
+    Dashes were tried and broke up on short bands.
+  - Tables show ✓ PASS / ✗ FAIL, and Review values end in ✓ / ✗.
+  - Every trace differs by line style or marker as well as colour (S31 has triangles).
+  - No separate accessibility mode, by decision. A CTS-blue/orange palette is the
+    fallback if one is ever wanted.
 - **Look**: 3TS colours (CTS blue, green, orange) with a light/dark switch. Title
   "Acceptance Test System" next to the CTS logo; the compiled launcher will be
   named CATS.

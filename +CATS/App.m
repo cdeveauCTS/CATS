@@ -2067,8 +2067,9 @@ classdef App < handle
                 lines = gobjects(0);
 
                 for t = obj.traceList(p)'
-                    lines(end+1) = plot(ax, NaN, NaN, 'LineWidth', 1.6, ...
-                        'LineStyle', t.Style, 'Color', t.Color, 'DisplayName', t.Name); %#ok<AGROW>
+                    lines(end+1) = plot(ax, NaN, NaN, 'LineWidth', 1.6, 'LineStyle', t.Style, ...
+                        'Marker', t.Marker, 'MarkerSize', 7, 'Color', t.Color, ...
+                        'DisplayName', t.Name); %#ok<AGROW>
                 end
 
                 hold(ax, 'off');
@@ -2108,13 +2109,13 @@ classdef App < handle
 
         function traces = traceList(~, p)
             % Transmission (Sn1) then reflection (Snn) for every port,
-            % each with its own colour and line style (CATS.Theme.trace).
+            % each with its own colour, line style and marker (CATS.Theme.trace).
 
             n = numel(p.Ports);
 
             names = p.PortNames;
 
-            traces = struct('Row', {}, 'Col', {}, 'Style', {}, 'Color', {}, 'Name', {});
+            traces = struct('Row', {}, 'Col', {}, 'Style', {}, 'Marker', {}, 'Color', {}, 'Name', {});
 
             rc = [(2:n).' ones(n-1,1); (1:n).' (1:n).'];
 
@@ -2122,10 +2123,10 @@ classdef App < handle
 
                 param = sprintf('S%d%d', rc(k,1), rc(k,2));
 
-                [color, style] = CATS.Theme.trace(param);
+                [color, style, marker] = CATS.Theme.trace(param);
 
                 traces(end+1) = struct('Row', rc(k,1), 'Col', rc(k,2), 'Style', style, ...
-                    'Color', color, 'Name', param + " " + names(rc(k,1))); %#ok<AGROW>
+                    'Marker', marker, 'Color', color, 'Name', param + " " + names(rc(k,1))); %#ok<AGROW>
 
             end
 
@@ -2156,6 +2157,9 @@ classdef App < handle
                 end
 
             end
+
+            CATS.App.placeMarkers(obj.H.Axes);
+            CATS.App.placeMarkers(obj.H.NarrowAxes);
 
             obj.drawOverlays(results);
 
@@ -2195,7 +2199,9 @@ classdef App < handle
                 data{k,1} = char(label);
                 data{k,2} = char(CATS.App.formatValue(results.Value(k), results.Units(k)));
                 data{k,3} = char(CATS.App.formatLimit(results.Type(k), results.Limit(k), results.Units(k)));
-                data{k,4} = char(ifelse(results.Pass(k), "PASS", ifelse(overridable(k), "FAIL*", "FAIL")));
+                % ✓ / ✗ as well as colour, for colour-blind operators
+                data{k,4} = char(ifelse(results.Pass(k), char(10003) + " PASS", ...
+                    ifelse(overridable(k), char(10007) + " FAIL*", char(10007) + " FAIL")));
 
             end
 
@@ -2474,7 +2480,7 @@ classdef App < handle
 
                     param = sprintf('S%d%d', rc(j,1), rc(j,2));
 
-                    [c, style] = CATS.Theme.trace(param);
+                    [c, style, marker] = CATS.Theme.trace(param);
 
                     if numel(items) > 1
                         c = colors(mod(k-1, size(colors,1)) + 1, :);
@@ -2483,8 +2489,8 @@ classdef App < handle
                     wide = rfplot(axesList(1), s, rc(j,1), rc(j,2));
                     narrow = rfplot(axesList(2), s, rc(j,1), rc(j,2));
 
-                    set([wide narrow], 'LineStyle', style, 'Color', c, 'LineWidth', 1.4, ...
-                        'DisplayName', name + " " + param);
+                    set([wide narrow], 'LineStyle', style, 'Marker', marker, 'MarkerSize', 7, ...
+                        'Color', c, 'LineWidth', 1.4, 'DisplayName', name + " " + param);
 
                     wide.UserData = narrow;
 
@@ -2520,6 +2526,9 @@ classdef App < handle
             xlim(obj.H.ReviewNarrowAxes, narrowX/scale);
             ylim(obj.H.ReviewNarrowAxes, narrowY);
 
+            CATS.App.placeMarkers(obj.H.ReviewAxes);
+            CATS.App.placeMarkers(obj.H.ReviewNarrowAxes);
+
             title(obj.H.ReviewAxes, 'Full sweep', 'FontSize', 13);
             title(obj.H.ReviewNarrowAxes, 'Passband', 'FontSize', 13);
 
@@ -2554,7 +2563,8 @@ classdef App < handle
                         data{j,2} = char(CATS.App.formatLimit(r.Type(j), r.Limit(j), r.Units(j)));
                     end
 
-                    data{j,2+k} = char(CATS.App.formatValue(r.Value(j), r.Units(j)));
+                    data{j,2+k} = char(CATS.App.formatValue(r.Value(j), r.Units(j)) + " " + ...
+                        ifelse(r.Pass(j), char(10003), char(10007)));       % ✓ / ✗
 
                     if r.Pass(j)
                         passCells(end+1,:) = [j, 2+k]; %#ok<AGROW>
@@ -3659,6 +3669,29 @@ classdef App < handle
     end
 
     methods (Static)
+
+        function placeMarkers(ax)
+            % Space the markers of marked traces (e.g. S31) evenly over
+            % the visible x range, so a zoomed plot still shows them.
+
+            lines = findobj(ax, 'Type', 'line', '-not', 'Marker', 'none', ...
+                '-not', 'Tag', 'SpecOverlay');
+
+            xl = xlim(ax);
+
+            for h = lines(:).'
+
+                visible = find(h.XData >= xl(1) & h.XData <= xl(2));
+
+                if isempty(visible)
+                    h.MarkerIndices = [];
+                else
+                    h.MarkerIndices = visible(CATS.Theme.markerIndices(numel(visible)));
+                end
+
+            end
+
+        end
 
         function file = reportFileName(file, records)
             % "..._UNCORRECTED.xlsx" when any part was measured without

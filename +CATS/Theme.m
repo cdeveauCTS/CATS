@@ -122,20 +122,26 @@ classdef Theme
 
         end
 
-        function [color, lineStyle] = trace(parameter)
-            % Colour and line style for an S-parameter trace, the same on
-            % every plot. Mid-brightness colours that read on light and
-            % dark axes and stay clear of the green / orange limit lines.
+        function [color, lineStyle, marker] = trace(parameter)
+            % Colour, line style and marker for an S-parameter trace, the
+            % same on every plot. Mid-brightness colours that read on
+            % light and dark axes and stay clear of the green / orange
+            % limit lines. Every trace also differs by line style or
+            % marker, so none relies on colour alone:
             %
-            %   transmission solid:  S21 blue, S31 teal
-            %   reflection:          S11 magenta dashed, S22 red dotted,
-            %                        S33 grey dash-dot
+            %   transmission:  S21 blue solid, S31 teal solid + triangles
+            %   reflection:    S11 magenta dashed, S22 red dotted,
+            %                  S33 grey dash-dot
+            %
+            % Markers are spaced with CATS.Theme.markerIndices.
+
+            marker = 'none';
 
             switch upper(string(parameter))
                 case "S21"
                     color = [30 120 220]/255;   lineStyle = '-';
                 case "S31"
-                    color = [0 165 165]/255;    lineStyle = '-';
+                    color = [0 165 165]/255;    lineStyle = '-';    marker = '^';
                 case "S11"
                     color = [200 60 200]/255;   lineStyle = '--';
                 case "S22"
@@ -145,6 +151,13 @@ classdef Theme
                 otherwise
                     color = [120 100 200]/255;  lineStyle = '-';
             end
+
+        end
+
+        function idx = markerIndices(n)
+            % About 30 evenly spaced markers along an n-point trace.
+
+            idx = unique(round(linspace(1, max(n,1), min(n, 30))));
 
         end
 

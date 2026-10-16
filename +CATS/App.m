@@ -282,21 +282,37 @@ classdef App < handle
 
                 driver.connect();
 
-                obj.Driver = driver;
-
-                obj.VNAInfo = struct('Model', found.Model(pick), ...
-                    'Resource', found.Resource(pick), 'IDN', found.IDN(pick));
+                obj.attachDriver(driver, found.Model(pick), found.Resource(pick), found.IDN(pick));
 
                 obj.Settings.VNAResource = found.Resource(pick);
                 obj.Settings.save();
-
-                obj.setStatus("Connected to " + found.Model(pick) + ".");
 
             catch ME
 
                 obj.alert(ME.message, 'VNA Connection Error');
 
             end
+
+            obj.refresh();
+
+        end
+
+    end
+
+    methods (Hidden)
+
+        function attachDriver(obj, driver, model, resource, idn)
+            % Use an already-connected driver (connectVNA, and tests that
+            % supply a driver talking to a stand-in instrument).
+
+            obj.Driver = driver;
+
+            obj.VNAInfo = struct('Model', string(model), ...
+                'Resource', string(resource), 'IDN', string(idn));
+
+            obj.CalVerified = false;
+
+            obj.setStatus("Connected to " + model + ".");
 
             obj.refresh();
 
@@ -335,6 +351,19 @@ classdef App < handle
             if ~CATS.SerialNumber.isValid(serial)
                 obj.alert(['The starting serial number must end in a number ' ...
                     '(e.g. 1235-0001) and contain no spaces or / \ : * ? " < > |.'], ...
+                    'Start Batch');
+                return
+            end
+
+            % Can this analyzer test this part? (e.g. an 8753ES only sweeps
+            % narrowband, 1601 points: no harmonics or wideband rejection)
+            coverage = Specs.checkCoverage(profile, obj.profileStimulus(profile), ...
+                obj.Driver.capabilities());
+
+            if ~coverage.OK
+                obj.alert(sprintf(['The %s at this station can''t test %s:\n\n%s\n\n' ...
+                    'Test this part at a station with a different analyzer.'], ...
+                    obj.VNAInfo.Model, profile.Name, strjoin("- " + coverage.Problems, newline)), ...
                     'Start Batch');
                 return
             end
@@ -493,12 +522,14 @@ classdef App < handle
                     obj.Driver.tuneToProfile(p);
                 end
 
+                stim = obj.profileStimulus(p);
+
                 obj.Driver.pushStimulus(struct( ...
-                    'StartFreq', p.Stimulus.StartHz, ...
-                    'StopFreq', p.Stimulus.StopHz, ...
-                    'NumPoints', p.Stimulus.Points, ...
-                    'IFBW', p.Stimulus.IFBWHz, ...
-                    'Power', p.Stimulus.PowerdBm));
+                    'StartFreq', stim.StartHz, ...
+                    'StopFreq', stim.StopHz, ...
+                    'NumPoints', stim.Points, ...
+                    'IFBW', stim.IFBWHz, ...
+                    'Power', stim.PowerdBm));
 
                 obj.sweepVNAScreen();
 
@@ -545,20 +576,22 @@ classdef App < handle
 
                 s = obj.Driver.readInstrumentSettings();
 
-                if abs(s.StartFreq - p.Stimulus.StartHz) > 1 || ...
-                        abs(s.StopFreq - p.Stimulus.StopHz) > 1 || ...
-                        s.NumPoints ~= p.Stimulus.Points
+                stim = obj.profileStimulus(p);
+
+                if abs(s.StartFreq - stim.StartHz) > 1 || ...
+                        abs(s.StopFreq - stim.StopHz) > 1 || ...
+                        s.NumPoints ~= stim.Points
 
                     reasons(end+1) = sprintf( ...
                         'VNA sweep is %.6g-%.6g MHz, %d points; profile needs %.6g-%.6g MHz, %d points.', ...
                         s.StartFreq/1e6, s.StopFreq/1e6, s.NumPoints, ...
-                        p.Stimulus.StartHz/1e6, p.Stimulus.StopHz/1e6, p.Stimulus.Points);
+                        stim.StartHz/1e6, stim.StopHz/1e6, stim.Points);
 
                 end
 
-                if abs(s.IFBW - p.Stimulus.IFBWHz) > 0.01*p.Stimulus.IFBWHz
+                if abs(s.IFBW - stim.IFBWHz) > 0.01*stim.IFBWHz
                     reasons(end+1) = sprintf('IF bandwidth is %g Hz; profile needs %g Hz.', ...
-                        s.IFBW, p.Stimulus.IFBWHz);
+                        s.IFBW, stim.IFBWHz);
                 end
 
                 cal = obj.Driver.getCalInfo();
@@ -1989,6 +2022,14 @@ classdef App < handle
 
         end
 
+        function stim = profileStimulus(obj, profile)
+            % The profile's sweep for the connected analyzer model (its
+            % StimulusByModel entry if it has one).
+
+            stim = Specs.stimulusFor(profile, obj.VNAInfo.Model);
+
+        end
+
         function tf = canTest(obj)
 
             tf = ~isempty(obj.Batch) && ~isempty(obj.Driver) && obj.CalVerified;
@@ -2084,7 +2125,7 @@ classdef App < handle
 
             end
 
-            [wideX, narrowX, wideY, narrowY] = CATS.App.plotLimits(p);
+            [wideX, narrowX, wideY, narrowY] = CATS.App.plotLimits(p, obj.profileStimulus(p));
 
             xlim(obj.H.Axes, wideX/1e6);
             ylim(obj.H.Axes, wideY);
@@ -2951,7 +2992,7 @@ classdef App < handle
             end
 
             if ~isempty(profile)
-                st = profile.Stimulus;
+                st = obj.profileStimulus(profile);
                 ref = [st.StartHz/1e6; st.StopHz/1e6; st.Points; st.IFBWHz/1e3; st.PowerdBm];
             else
                 ref = NaN(5,1);
@@ -3208,7 +3249,7 @@ classdef App < handle
                 return
             end
 
-            st = profile.Stimulus;
+            st = obj.profileStimulus(profile);
 
             obj.setEngFields([st.StartHz/1e6; st.StopHz/1e6; st.Points; ...
                 st.IFBWHz/1e3; st.PowerdBm]);
@@ -3781,12 +3822,17 @@ classdef App < handle
 
         end
 
-        function [wideX, narrowX, wideY, narrowY] = plotLimits(p)
+        function [wideX, narrowX, wideY, narrowY] = plotLimits(p, stim)
             % Plot ranges for a profile (Hz, dB). Display.YLimdB and
             % Display.NarrowYLimdB override the defaults: -80..5 dB for
-            % the full sweep, -40..2 dB for the passband view.
+            % the full sweep, -40..2 dB for the passband view. stim is
+            % the sweep in use (default: the profile's Stimulus).
 
-            wideX = [p.Stimulus.StartHz p.Stimulus.StopHz];
+            if nargin < 2
+                stim = p.Stimulus;
+            end
+
+            wideX = [stim.StartHz stim.StopHz];
 
             wideY = [-80 5];
 

@@ -127,6 +127,19 @@ The PC needs:
   - Every trace differs by line style or marker as well as colour (S31 has triangles).
   - No separate accessibility mode, by decision. A CTS-blue/orange palette is the
     fallback if one is ever wanted.
+- **Measurement method changes (2026-10-16)** apply to CATS, 3TS Live Plot and the
+  user's `D:\MATLAB` plotting scripts alike:
+  - **Bandwidth** (1 / 6 dBr) is interpolated to the level crossings. It used to be
+    taken at the grid points outside them, overstating it by up to one step per side.
+  - **Ripple, single-dome passbands:** a passband with fewer than two smoothed maxima
+    (every 1233 / 1234 sweep) is now measured as the peak-to-peak deviation from a
+    quadratic fitted across the band. It used to read 0, so it was never tested.
+    Multi-peak passbands are unchanged.
+  - **3rd-harmonic limit** of 5 dBr is correct (the re-entrant 3x response is expected).
+- **Thermal phase tracking (3TS Live Plot / phase_comp):**
+  - Per part: linear fit of phase against setpoint; max error must be <= ±5°.
+  - Part to part: all parts within a ±45° window, i.e. spread <= 90°.
+  - Ambient sweeps are excluded from both.
 - **Look**: 3TS colours (CTS blue, green, orange) with a light/dark switch. Title
   "Acceptance Test System" next to the CTS logo; the compiled launcher will be
   named CATS.
